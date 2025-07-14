@@ -61,29 +61,45 @@ def main(path_original_images: Path = Path("C:/data/ToothFairy3/imagesTr"),
     logging.basicConfig(level=logging.INFO)
 
     # Get labels etc. from dataset json
-    with path_dataset_json.open("r") as f:
-        metadata = json.load(f)
+    with path_dataset_json.open("r") as j:
+        metadata = dict(json.load(j))
 
     assert path_original_images.exists(), f"Data directory {path_original_images} is missing - can not continue."
     assert path_original_labels.exists(), f"Data directory {path_original_labels} is missing - can not continue."
 
     # TODO: reflect images and labels, converting left/right as necessary.
 
-    # Prototype model - segment all bony anatomy as four labels - bone vs teeth, upper and lower.
-    # Teeth are numbered 11-18, 21-28 etc. and pulps are numbered as +100.
-    path_labels_bt = path_output_dir / "labelsTrBT"
-    path_labels_bt.mkdir(exist_ok=True, parents=True)
+    # Bony anatomy - Combine pulps and teeth into single shapes (intending to find pulps later)
+    # Setting labels as consecutive.
+
+    path_labels_bony = path_output_dir / "labelsTr_bony"
+    path_labels_bony.mkdir(exist_ok=True, parents=True)
     
-    bones_teeth_lookup = {
-        1: [1], # Lower jawbone
-        2: [2], # Upper jawbone
-        3: [i for i in range(11, 18)] + [i for i in range(21, 28)] + [i for i in range(111, 118)] + [i for i in range(121, 128)],
-        4: [i for i in range(31, 38)] + [i for i in range(41, 48)] + [i for i in range(131, 138)] + [i for i in range(141, 148)],
-    }
+    updated_bony_labels = {}
+    bony_label_lookup = {}
 
-    Parallel(n_jobs=1)(delayed(replace_labels)(path_in, path_labels_bt / path_in.name, bones_teeth_lookup, overwrite) 
+    i = 0
+
+    for k, v in metadata["labels"].items():
+        if "Sinus" in k or "Canal" in k or "Pharynx" in k:
+            continue
+
+        if "Pulp" in k:
+            tooth = k.removesuffix(" Pulp")
+            bony_label_lookup[updated_bony_labels[tooth]].append(v)
+        else:
+            updated_bony_labels[k] = i
+            bony_label_lookup[i] = [v]
+            i = i + 1
+    
+    print(updated_bony_labels)
+    print(bony_label_lookup)
+
+    with (path_labels_bony / "bony_labels.json").open("w") as j:
+        json.dump(updated_bony_labels, j)
+
+    Parallel(n_jobs=1)(delayed(replace_labels)(path_in, path_labels_bony / path_in.name, bony_label_lookup, overwrite) 
                        for path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))))
-
 
 if __name__ == "__main__":
     main()
