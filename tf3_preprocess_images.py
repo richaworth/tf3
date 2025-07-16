@@ -40,10 +40,10 @@ def replace_labels(path_original_label: Path, path_output_label: Path, label_loo
     nibabel.save(im_out, path_output_label)
     
 
-def main(path_original_images: Path = Path("C:/data/ToothFairy3/imagesTr"),
-         path_original_labels: Path = Path("C:/data/ToothFairy3/labelsTr"), 
-         path_dataset_json: Path = Path("C:/data/ToothFairy3/dataset.json"), 
-         path_output_dir: Path = Path("C:/data/ToothFairy3"),
+def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
+         path_original_labels: Path = Path("C:/data/tf3/labelsTr"), 
+         path_dataset_json: Path = Path("C:/data/tf3/dataset.json"), 
+         path_output_dir: Path = Path("C:/data/tf3"),
          overwrite: bool = False):
     """
     Run ToothFairy3 preprocessing:
@@ -98,8 +98,9 @@ def main(path_original_images: Path = Path("C:/data/ToothFairy3/imagesTr"),
     with (path_labels_bony / "bony_labels.json").open("w") as j:
         json.dump(updated_bony_labels, j)
 
-    Parallel(n_jobs=1)(delayed(replace_labels)(path_in, path_labels_bony / path_in.name, bony_label_lookup, overwrite) 
-                       for path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))))
+    for  path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))):
+        replace_labels(path_in, path_labels_bony / path_in.name, bony_label_lookup, overwrite=True) 
+
 
 if __name__ == "__main__":
     main()
