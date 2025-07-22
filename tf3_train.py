@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import time
 import matplotlib.pyplot as plt
-   
+
 from monai.data.utils import decollate_batch 
 from monai.data.dataset import PersistentDataset, Dataset
 from monai.data.dataloader import DataLoader

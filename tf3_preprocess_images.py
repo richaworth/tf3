@@ -67,39 +67,70 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
     assert path_original_images.exists(), f"Data directory {path_original_images} is missing - can not continue."
     assert path_original_labels.exists(), f"Data directory {path_original_labels} is missing - can not continue."
 
+    # Create reflected images and labels
+    path_images_mirrored =  path_output_dir / "images_mirrored" 
+    path_labels_mirrored =  path_output_dir / "labels_mirrored" 
+
+
     # TODO: reflect images and labels, converting left/right as necessary.
 
-    # Bony anatomy - Combine pulps and teeth into single shapes (intending to find pulps later)
-    # Setting labels as consecutive.
+    # Gross labels - maxilla, mandible, lower teeth, upper teeth (for localisation)
+    path_labels_gross = path_output_dir / "labelsTr_gross" 
+    path_labels_gross.mkdir(exist_ok=True, parents=True)
 
-    path_labels_bony = path_output_dir / "labelsTr_bony"
-    path_labels_bony.mkdir(exist_ok=True, parents=True)
-    
-    updated_bony_labels = {}
-    bony_label_lookup = {}
-
-    i = 0
+    updated_gross_labels = {}
+    gross_label_lookup = {}
 
     for k, v in metadata["labels"].items():
-        if "Sinus" in k or "Canal" in k or "Pharynx" in k:
+        if k == "Lower Jawbone":
+            updated_gross_labels[k] = 1
+            gross_label_lookup[1] = [v]
+        if k == "Upper Jawbone":
+            updated_gross_labels[k] = 2
+            gross_label_lookup[2] = [v]
+        if "Upper" in k and ("Molar" in k or "Incisor" in k or "Canine" in k or "Premolar" in k):
+            updated_gross_labels[k] = 3
+            gross_label_lookup[3] = [v]
+        if "Lower" in k and ("Molar" in k or "Incisor" in k or "Canine" in k or "Premolar" in k):
+            updated_gross_labels[k] = 4
+            gross_label_lookup[4] = [v]
+        else:
             continue
 
-        if "Pulp" in k:
-            tooth = k.removesuffix(" Pulp")
-            bony_label_lookup[updated_bony_labels[tooth]].append(v)
-        else:
-            updated_bony_labels[k] = i
-            bony_label_lookup[i] = [v]
-            i = i + 1
+    with (path_labels_gross / "updated_labels.json").open("w") as j:
+        json.dump(updated_gross_labels, j)
+
+    for path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))):
+        replace_labels(path_in, path_labels_gross / path_in.name, gross_label_lookup, overwrite=overwrite) 
+
+    # # Bony anatomy - Combine pulps and teeth into single shapes (intending to find pulps later)
+    # # Setting labels as consecutive.
+
+    # path_labels_bony = path_output_dir / "labelsTr_bony"
+    # path_labels_bony.mkdir(exist_ok=True, parents=True)
     
-    print(updated_bony_labels)
-    print(bony_label_lookup)
+    # updated_bony_labels = {}
+    # bony_label_lookup = {}
 
-    with (path_labels_bony / "bony_labels.json").open("w") as j:
-        json.dump(updated_bony_labels, j)
+    # i = 0
 
-    for  path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))):
-        replace_labels(path_in, path_labels_bony / path_in.name, bony_label_lookup, overwrite=True) 
+    # for k, v in metadata["labels"].items():
+    #     if "Sinus" in k or "Canal" in k or "Pharynx" in k:
+    #         continue
+
+    #     if "Pulp" in k:
+    #         tooth = k.removesuffix(" Pulp")
+    #         bony_label_lookup[updated_bony_labels[tooth]].append(v)
+    #     else:
+    #         updated_bony_labels[k] = i
+    #         bony_label_lookup[i] = [v]
+    #         i = i + 1
+
+    # with (path_labels_bony / "updated_labels.json").open("w") as j:
+    #     json.dump(updated_bony_labels, j)
+
+    # for  path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))):
+    #     replace_labels(path_in, path_labels_bony / path_in.name, bony_label_lookup, overwrite=overwrite) 
 
 
 if __name__ == "__main__":
