@@ -1,10 +1,7 @@
-import json
 import logging
-import os
 from pathlib import Path
 import random
 import shutil
-import tempfile
 import time
 import matplotlib.pyplot as plt
 
@@ -17,7 +14,7 @@ from monai.metrics.meandice import DiceMetric
 from monai.networks.layers import Norm
 from monai.networks.nets import UNet
 from monai.transforms import (AsDiscrete, AsDiscreted, RandCropByPosNegLabeld, Compose, LoadImaged, SaveImaged, RandShiftIntensityd, ScaleIntensityRanged,
-    Orientationd, RandAffined, Spacingd, RandFlipd, EnsureChannelFirstd)
+    Orientationd, RandAffined, EnsureChannelFirstd, SpatialPadd)
 
 from monai.utils.misc import set_determinism
 import numpy as np
@@ -27,7 +24,8 @@ from tqdm import tqdm
 
 import torch
 
-        
+ROI_SIZE = (96, 96, 96)
+
 def train_model(ld_train: list[dict], 
                 ld_val: list[dict], 
                 path_output_dir: Path,
@@ -61,9 +59,10 @@ def train_model(ld_train: list[dict],
 
     dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
 
-    max_epochs = 100
-    val_interval = 5
-    checkpoint_interval = 2 # Save a checkpoint of the training in case restarting is required.
+    max_epochs = 1000
+    val_interval = 50
+    checkpoint_interval = 10 # Save a checkpoint of the training in case restarting is required (temporary).
+    major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
 
     best_metric = -1
     best_metric_epoch = -1
@@ -73,11 +72,16 @@ def train_model(ld_train: list[dict],
     epoch_times = []
     total_start = time.time()
 
+
     # Load checkpoints
     if path_checkpoint_model is not None:
         torch.load(path_checkpoint_model, model.state_dict())
         
     min_epochs = 0 if checkpoint_epoch is None else checkpoint_epoch
+    path_previous_best_metric = None
+    path_previous_checkpoint = path_checkpoint_model
+
+    path_final_model = path_output_dir / f"{model_name}.pth"
 
     for epoch in range(min_epochs, max_epochs):
         epoch_start = time.time()
@@ -117,7 +121,15 @@ def train_model(ld_train: list[dict],
         logging.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
 
         if checkpoint_interval > 0 and (epoch + 1) % checkpoint_interval == 0:
-            torch.save(model.state_dict(), path_output_dir / f"checkpoint_{model_name}_epoch_{epoch + 1}.pth")
+            path_new_checkpoint = path_output_dir / f"checkpoint_{model_name}_epoch_{epoch + 1}.pth"
+            logging.debug(f"Saving current checkpoint model {path_new_checkpoint}.")
+            torch.save(model.state_dict(), path_new_checkpoint)
+
+            if (epoch - checkpoint_interval + 1) % major_checkpoint_interval == 0:
+                logging.debug(f"Keeping major interval checkpoint model {path_previous_checkpoint}.")
+            else:
+                logging.debug(f"Removing previous checkpoint model {path_previous_checkpoint}.")
+                path_previous_checkpoint.unlink()
 
         if (epoch + 1) % val_interval == 0:
             model.eval()
@@ -131,16 +143,15 @@ def train_model(ld_train: list[dict],
                             val_data["label"].to(device),
                         )
 
-                        roi_size = (64, 64, 64)
                         sw_batch_size = 4
                         if amp:
                             with torch.autocast("cuda"):
-                                val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model)
+                                val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, sw_batch_size, model)
                                 val_outputs_as_discrete = [post_pred(i) for i in decollate_batch(val_outputs)]
                                 val_labels_as_discrete = [post_label(i) for i in decollate_batch(val_labels)]
                                 dice_metric(y_pred=val_outputs_as_discrete, y=val_labels_as_discrete)
                         else:
-                            val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model)
+                            val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, sw_batch_size, model)
 
                             val_outputs_as_discrete = [post_pred(i) for i in decollate_batch(val_outputs)]
                             val_labels_as_discrete = [post_label(i) for i in decollate_batch(val_labels)]
@@ -159,8 +170,15 @@ def train_model(ld_train: list[dict],
                 best_metrics_epochs_and_time[0].append(best_metric)
                 best_metrics_epochs_and_time[1].append(best_metric_epoch)
                 best_metrics_epochs_and_time[2].append(time.time() - total_start)
-                torch.save(model.state_dict(), path_output_dir / f"{model_name}_best_metric_epoch_{epoch + 1}.pth")
-                logging.info("saved new best metric model")
+
+                path_best_metric = path_output_dir / f"{model_name}_best_metric_epoch_{epoch + 1}.pth"
+                torch.save(model.state_dict(), path_best_metric)
+                logging.info(f"Saved new best metric model {path_best_metric}")
+
+                if path_previous_best_metric is not None:
+                    path_previous_best_metric.unlink()
+
+                path_previous_best_metric = path_best_metric
                 count_no_improvement = 0
             else:
                 count_no_improvement = count_no_improvement + 1
@@ -174,6 +192,7 @@ def train_model(ld_train: list[dict],
 
             if count_no_improvement == no_improvement_threshold:
                 logging.info(f"No improvement after {count_no_improvement * val_interval} epochs. Stopping training.")
+                shutil.move(path_previous_best_metric, path_final_model)
                 break
 
         logging.info(f"time consuming of epoch {epoch + 1}" f" is: {(time.time() - epoch_start):.4f}")
@@ -209,16 +228,28 @@ def test_model(ld_test: list[dict], path_checkpoint_model: Path, model, preproce
     with torch.no_grad():
         for d in test_loader:
             images = d["image"].to(device)
-            roi_size = (64, 64, 64)
 
-            d["pred"] = sliding_window_inference(images, roi_size, 4, model)
+            d["pred"] = sliding_window_inference(images, ROI_SIZE, 4, model)
             _ = [post_pred(i) for i in decollate_batch(d)]
             
             
 
-def main(path_output_dir: Path = Path("C:/data/tf3_output"), overwrite: bool = False):
-    logging.basicConfig(level=logging.INFO)
-    set_determinism(1)
+def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
+    """
+    Train low-resolution localiser model (upper jaw, upper teeth, lower teeth, lower jaw) from preprocessed images (see tf3_preprocess_images.py)
+
+    Args:
+        path_output_dir (_type_, optional): Path to output directory (will create cache directories, test searches as necessary).
+            Defaults to Path("C:/data/tf3_localiser_output/").
+    """
+    path_output_dir.mkdir(exist_ok=True, parents=True)
+    logging.basicConfig(level=logging.INFO, 
+                        format="%(asctime)s [%(levelname)s] %(message)s", 
+                        handlers=[logging.FileHandler(path_output_dir / "logs/localiser_training_log.txt"), logging.StreamHandler()])
+    deterministic_seed = 0
+
+    random.seed(deterministic_seed)
+    set_determinism(deterministic_seed)
 
     path_data_dir = Path("C:/data/tf3")
 
@@ -230,7 +261,6 @@ def main(path_output_dir: Path = Path("C:/data/tf3_output"), overwrite: bool = F
 
     # Get case IDs, shuffle and distribute into train/test/validate - 70%/15%/15% split. 
     # TODO: Output these lists as text files for review.
-    random.seed(0)
     case_ids = [label.name.split(".")[0] for label in path_labels.glob("*.nii.gz")]
     assert all([(path_images / f"{case_id}_0000.nii.gz").exists() for case_id in case_ids])
     random.shuffle(case_ids)
@@ -239,31 +269,26 @@ def main(path_output_dir: Path = Path("C:/data/tf3_output"), overwrite: bool = F
     case_ids_val = case_ids[int(len(case_ids)*0.7):int(len(case_ids)*0.85)]
     case_ids_test = case_ids[int(len(case_ids)*0.85):]
 
-    n_labels = 3
+    n_labels = 5
     
     # Image transforms (non-random first, so PersistentDataset can function)
-    # Clipping/scaling HU - Air (-1000HU) to Metal (4000HU to differentiate from very hard tooth enamel (~3000HU)).
+    # Clipping/scaling HU - No real reason for a_max to be above 2000 HU for localisation model (metalwork is included in the teeth models).
+    # Initial images are already set to 1, 1, 1 voxel size, so no rescaling required.
+
     initial_transforms = [
         LoadImaged(keys=["image", "label"]),
         EnsureChannelFirstd(keys=["image", "label"]),
         Orientationd(keys=["image", "label"], axcodes="RAS"),
-        ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=4000, b_min=0.0, b_max=1.0, clip=True, dtype=None),
+        ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=2000, b_min=0.0, b_max=1.0, clip=True),
+        SpatialPadd(keys=["image", "label"], spatial_size=(96, 96, 96), mode="constant"),
     ]
 
     train_only_transforms = [            
         RandAffined(keys=['image', 'label'], mode=('bilinear', 'nearest'), prob=0.9, 
                     rotate_range=(0, 0, np.pi/15), scale_range=(0.1, 0.1, 0.1)),            
-        RandCropByPosNegLabeld(keys=["image", "label"], label_key="label", spatial_size=(64, 64, 64),
-                               pos=1, neg=1, num_samples=4, image_key="image", image_threshold=0.01, allow_smaller=True),
+        RandCropByPosNegLabeld(keys=["image", "label"], label_key="label", spatial_size=ROI_SIZE,
+                               pos=1, neg=1, num_samples=4, allow_smaller=True),
         RandShiftIntensityd(keys=["image"], offsets=0.10, prob=0.50),
-    ]
-
-    preprocessing_transforms = [
-        LoadImaged(keys=["image"]),
-        EnsureChannelFirstd(keys=["image"]),
-        Orientationd(keys=["image"], axcodes="RAS"),
-        Spacingd(keys=["image"], pixdim=(1, 1, 1), mode=("bilinear")),
-        ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=4000, b_min=0.0, b_max=1.0, clip=True, dtype=None),
     ]
 
     postprocessing_transforms = [
@@ -281,15 +306,16 @@ def main(path_output_dir: Path = Path("C:/data/tf3_output"), overwrite: bool = F
         norm=Norm.BATCH,
     )
 
-    path_gross_labels = path_data_dir / "labelsTr_gross"
+    path_localiser_images = path_data_dir / "images_localiser_rolm"
+    path_localiser_labels = path_data_dir / "labels_localiser_rolm"
 
-    ld_train_gross = [{"image": path_images / f"{c}_0000.nii.gz", "label": path_gross_labels / f"{c}.nii.gz"} for c in case_ids_train]
-    ld_val_gross = [{"image": path_images / f"{c}_0000.nii.gz", "label": path_gross_labels / f"{c}.nii.gz"} for c in case_ids_val]
-    ld_test_gross = [{"image": path_images / f"{c}_0000.nii.gz"} for c in case_ids_test]
+    ld_train = [{"image": path_localiser_images / f"{c}_0000.nii.gz", "label": path_localiser_labels / f"{c}.nii.gz"} for c in case_ids_train]
+    ld_val = [{"image": path_localiser_images / f"{c}_0000.nii.gz", "label": path_localiser_labels / f"{c}.nii.gz"} for c in case_ids_val]
+    ld_test = [{"image": path_localiser_images / f"{c}_0000.nii.gz"} for c in case_ids_test]
 
-    train_model(ld_train_gross, ld_val_gross, path_output_dir, model, "bones_only", initial_transforms, train_only_transforms, n_labels, amp=True, 
+    train_model(ld_train, ld_val, path_output_dir, model, "localiser", initial_transforms, train_only_transforms, n_labels, amp=True, 
                 deterministic_training_seed=1)
-    test_model(ld_test_gross, path_output_dir / "bones_only", model, preprocessing_transforms, postprocessing_transforms)
+    test_model(ld_test, path_output_dir / "localiser.pth", model, initial_transforms, postprocessing_transforms)
     
 
 
