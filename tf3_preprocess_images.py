@@ -164,46 +164,84 @@ def process_upper_lower_implants_crowns_bridges(path_input_label, path_output_la
     nibabel.save(im_out, path_output_label)
 
 
-def tooth_centre_signed_distance(path_input_label: Path, path_output_all_labels: Path, overwrite: bool = False):
+def per_tooth_image_mask_sd(path_input_image: Path, 
+                            path_input_label: Path, 
+                            path_per_tooth_image_dir: Path, 
+                            path_per_tooth_label_dir: Path, 
+                            path_sd_map_dir: Path, 
+                            roi_size: tuple[int] = (96, 96, 96), 
+                            overwrite: bool = False):
     """
-    Create signed distance image maps for tooth centres.
+    
 
     Args:
-        path_input_label (Path): Path to the input label image
-        path_output_all_labels (Path): Path to the output label image
-        overwrite (bool, optional): Overwrite existing files?. Defaults to False.
+        path_input_image (Path): _description_
+        path_input_label (Path): _description_
+        path_per_tooth_image_dir (Path): _description_
+        path_per_tooth_label_dir (Path): _description_
+        path_sd_map_dir (Path): _description_
+        roi_size (tuple[int], optional): _description_. Defaults to (96, 96, 96).
+        overwrite (bool, optional): _description_. Defaults to False.
     """
-    if path_output_all_labels.exists() and not overwrite:
-        logging.debug(f"{path_output_all_labels} exists and is not to be overwritten - returning")
-        return
-        
-    im = nibabel.load(path_input_label)
-
-    im_data = im.get_fdata()
-    im_all_labels = np.empty(shape=im_data.shape, dtype=im.header.get_data_dtype())
+    output_stem = path_input_image.name.split(".nii.gz")[0]
+    
+    im_label = nibabel.load(path_input_label)
+    im_label_data = im_label.get_fdata()
+    im_all_labels = np.empty(shape=im_label_data.shape, dtype=im_label.header.get_data_dtype())
 
     # Teeth are labelled 11-47, and related pulp == (tooth + 100)
     # For each - get centre of tooth, dilate to a small circle of ~1mm diameter (2 iterations), calculate distance from each voxel to this circle.
     # Additionally create a review image of all tooth centres.
-    for l in range(11, 48):
-        if l in im_data:
-            mask = np.where(np.logical_or(im_data == l, im_data == l+100), 1, 0)
+    for lab in range(11, 48):
+        if lab in im_label_data:
+            path_tooth_ct_out = path_per_tooth_image_dir / f"{output_stem}_{lab}.nii.gz"
+            path_tooth_labels_out = path_per_tooth_label_dir / f"{output_stem}_{lab}.nii.gz"
+            path_tooth_sd_out = path_sd_map_dir / f"{output_stem}_{lab}.nii.gz"
+
+            if not overwrite:
+                if path_tooth_ct_out.exists() and path_tooth_labels_out.exists() and path_tooth_sd_out.exists():
+                    logging.debug(f"{output_stem}_{lab} files exist and are not to be overwritten - skipping.")
+                    continue
+
+            mask = np.where(np.logical_or(im_label_data == lab, im_label_data == lab+100), 1, 0)
             center_of_tooth = np.rint(center_of_mass(mask))
-            
-            mask_out = np.empty(shape=im_data.shape, dtype=im.header.get_data_dtype())
-            mask_out[int(center_of_tooth[0]), int(center_of_tooth[1]), int(center_of_tooth[2])] = 1
-            mask_out = binary_dilation(mask_out, iterations=2)
 
-            im_all_labels = np.where(mask_out == 1, l, im_all_labels)  # Add label to review image.
+            # Crop image to small patch around centre of tooth. Create tooth/pulp labels (1 and 2, respectively). Ensure sliced region isn't outside image bounds.
+            if (not path_tooth_ct_out.exists() and not path_tooth_labels_out.exists()) or overwrite:
+                im_ct = nibabel.load(path_input_image)
+                i0 = max(int(center_of_tooth[0]) - int(roi_size[0] / 2), 0)
+                i1 = min(int(center_of_tooth[0]) + int(roi_size[0] / 2), im_ct.shape[0])
+                j0 = max(int(center_of_tooth[1]) - int(roi_size[1] / 2), 0)
+                j1 = min(int(center_of_tooth[1]) + int(roi_size[1] / 2), im_ct.shape[0])
+                k0 = max(int(center_of_tooth[2]) - int(roi_size[2] / 2), 0)
+                k1 = min(int(center_of_tooth[2]) + int(roi_size[2] / 2), im_ct.shape[0])
 
-            itk_image = sitk.GetImageFromArray(np.astype(mask_out, int))
-            itk_smdm_out = sitk.SignedMaurerDistanceMap(itk_image, insideIsPositive=True, squaredDistance=False, useImageSpacing=True)
+                im_ct_cropped = im_ct.slicer[i0:i1, j0:j1, k0:k1]
+                nibabel.save(im_ct_cropped, path_tooth_ct_out)
 
-            im_out = nibabel.Nifti1Image(sitk.GetArrayViewFromImage(itk_smdm_out), im.affine, im.header, dtype=im.header.get_data_dtype())
-            nibabel.save(im_out, path_output_all_labels.parent / f"{path_output_all_labels.stem}_{l}.nii.gz")
+                mask_tooth = np.where(im_label_data == lab, 1, 0)
+                mask_tooth = np.where(im_label_data == lab+100, 2, mask_tooth)
+                nii_mask_tooth = nibabel.Nifti1Image(mask_tooth, im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
 
-    im_out = nibabel.Nifti1Image(im_all_labels, im.affine, im.header, dtype=im.header.get_data_dtype())
-    nibabel.save(im_out, path_output_all_labels)
+                nii_mask_tooth_cropped = nii_mask_tooth.slicer[i0:i1, j0:j1, k0:k1]
+                nibabel.save(nii_mask_tooth_cropped, path_tooth_labels_out)
+
+            # Create signed distance map per tooth.
+            if not path_tooth_sd_out.exists() or overwrite:
+                sd_out = np.empty(shape=im_label_data.shape, dtype=im_label.header.get_data_dtype())
+                sd_out[int(center_of_tooth[0]), int(center_of_tooth[1]), int(center_of_tooth[2])] = 1
+                sd_out = binary_dilation(sd_out, iterations=2)
+
+                im_all_labels = np.where(sd_out == 1, lab, im_all_labels)  # Add label to review image.
+
+                itk_image = sitk.GetImageFromArray(np.astype(sd_out, int))
+                itk_smdm_out = sitk.SignedMaurerDistanceMap(itk_image, insideIsPositive=True, squaredDistance=False, useImageSpacing=True)
+
+                nii_sd_out = nibabel.Nifti1Image(sitk.GetArrayViewFromImage(itk_smdm_out), im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
+                nibabel.save(nii_sd_out, path_tooth_sd_out)
+
+    im_out = nibabel.Nifti1Image(im_all_labels, im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
+    nibabel.save(im_out, path_sd_map_dir / f"{output_stem}_all_landmarks.nii.gz")
 
 
 def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
@@ -282,8 +320,13 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
         elif k == "Bridge" or k == "Crown":
             label_lookup_localisation[v] = 6
 
-    # Set up for tooth centre map creation
+    # Set up for tooth centre sd and per-tooth image/label pair creation
+    path_per_tooth_image_dir = path_output_dir / "images_per_tooth_cropped"
+    path_per_tooth_label_dir = path_output_dir / "labels_per_tooth_cropped"
     path_tooth_centre_sd = path_output_dir / "labels_tooth_centre_sd"
+
+    path_per_tooth_image_dir.mkdir(exist_ok=True, parents=True)
+    path_per_tooth_label_dir.mkdir(exist_ok=True, parents=True)
     path_tooth_centre_sd.mkdir(exist_ok=True, parents=True)
 
     def _run_case(case_id):
@@ -308,10 +351,9 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
                 replace_labels(path_labels_loc / f"{case_id}{suffix}_res.nii.gz", path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", label_lookup_localisation, overwrite=overwrite)
                 process_upper_lower_implants_crowns_bridges(path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", path_labels_loc / f"{case_id}{suffix}.nii.gz", overwrite=overwrite)
             
-            # Construct tooth centre signed distance maps
-            if not (path_tooth_centre_sd / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
-                tooth_centre_signed_distance(path_labels_rolm / f"{case_id}{suffix}.nii.gz",  path_tooth_centre_sd / f"{case_id}{suffix}.nii.gz")
-
+            # Construct tooth centre signed distance maps (does internal existence checking, so no need to put here).
+            per_tooth_image_mask_sd(path_images_rolm / f"{case_id}{suffix}.nii.gz", path_labels_rolm / f"{case_id}{suffix}.nii.gz", 
+                                    path_per_tooth_image_dir, path_per_tooth_label_dir, path_tooth_centre_sd, (96, 96, 96), overwrite)
         
             # Tidy up interim files as necessary:
             (path_images_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
@@ -321,7 +363,7 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
             (path_images_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
             (path_labels_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
 
-    Parallel(n_jobs=8)(delayed(_run_case)(c) for c in tqdm(case_ids))
+    Parallel(n_jobs=1)(delayed(_run_case)(c) for c in tqdm(case_ids))
 
 
 if __name__ == "__main__":
