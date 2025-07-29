@@ -1,44 +1,210 @@
+from copy import deepcopy
 import json
 import logging
+import shutil
+from typing import Literal
 from joblib import Parallel, delayed
 import nibabel
+import nilearn.image
 import numpy as np
 
 from pathlib import Path
 
+from scipy.ndimage import label, binary_dilation, center_of_mass
 from tqdm import tqdm
 
-def replace_labels(path_original_label: Path, path_output_label: Path, label_lookup: dict, overwrite: bool = False):
+import SimpleITK as sitk
+
+
+def reflect_image(path_image_in, path_image_out, overwrite: bool = False):
+    """
+    Reflect image along X axis.
+
+    Args:
+        path_image_in (Path): Path to the input image
+        path_image_out (Path): Path to the output image
+        overwrite (bool, optional): Overwrite existing files?. Defaults to False.
+
+    """
+    if path_image_out.exists() and not overwrite:
+        logging.debug(f"{path_image_out} exists and is not to be overwritten - returning")
+        return
+
+    im = nibabel.load(path_image_in)
+
+    im_data =im.get_fdata()
+    im_data_out = np.flip(np.astype(im_data, im.header.get_data_dtype()), axis=0)
+
+    im_out = nibabel.Nifti1Image(im_data_out, im.affine, im.header, dtype=im.header.get_data_dtype())
+    nibabel.save(im_out, path_image_out)
+
+def replace_labels(path_input_label: Path, path_output_label: Path, label_lookup: dict, overwrite: bool = False):
     """
     Load nifti format label image, replace labels according to the lookup, save image.
 
     Args:
         path_original_label (Path): Path to original image directory.
         path_output_label (Path): Path to original label image directory.
-        label_lookup (dict): Lookup dictionary for combining/renaming labels. Any label not in the lookup will be
-            set as background (0). E.g. {1: [1, 2], 2: [3, 4]} will rename labels 1+2 as 1, and 3+4 as 2.
+        label_lookup (dict): Lookup dictionary for combining/renaming labels (old to new). Any label not in the lookup will be
+            set as background (0). E.g. {1: 2, 2: 3} will replace labels 1 as 2, and 2 as 3.
         overwrite (bool): Overwrite existing output files?
 
     Returns:
         onnx file for each trained model
     """
     if path_output_label.exists() and not overwrite:
-        logging.info(f"{path_output_label} exists and is not to be overwritten - returning")
+        logging.debug(f"{path_output_label} exists and is not to be overwritten - returning")
         return
     
-    im = nibabel.load(path_original_label)
+    im = nibabel.load(path_input_label)
 
     im_data = im.get_fdata()
-    im_data_out = np.empty(im_data.shape)
+    im_data_out = np.empty(shape=im_data.shape, dtype=im.header.get_data_dtype())
 
-    for new, old in label_lookup.items():
-        for o in old:
-            logging.debug(f"Setting label {o} to {new}")
-            im_data_out[:] = np.where(im_data == o, new, im_data_out[:])
+    if 0 in label_lookup.keys() and label_lookup[0] == 0:
+        label_lookup.pop(0)
+        ignore_bg = True
+    else:
+        ignore_bg = False
 
-    im_out = nibabel.Nifti1Image(im_data_out, im.affine, im.header)
+    get_above = 0 if ignore_bg else -1
+
+    for i, x in np.ndenumerate(im_data):
+        if x > get_above and x in label_lookup.keys():
+            im_data_out[i] = label_lookup[int(x)]
+
+    im_out = nibabel.Nifti1Image(im_data_out, im.affine, im.header, dtype=im.header.get_data_dtype())
     nibabel.save(im_out, path_output_label)
+
+def resample_image(path_image_in: Path, 
+                   path_image_out: Path, 
+                   resolution: tuple[float] = (1, 1, 1), 
+                   interpolation: Literal["continuous", "linear", "nearest"] = "continuous", 
+                   overwrite: bool = False):
+    """
+    Resample nifti image to given resolution and using the given interpolation method.
+
+    Args:
+        path_image_in (Path): Path to the input image.
+        path_image_out (Path): Path to the output image.
+        resolution (tuple, optional): Resolution to resample to. Defaults to (1, 1, 1).
+        interpolation (str, optional): Interpolation method (continuous, linear or nearest). Defaults to "continuous".
+        overwrite (bool, optional): Overwrite existing files? Defaults to False.
+    """
+    if path_image_out.exists() and not overwrite:
+        logging.debug(f"{path_image_out} exists and is not to be overwritten - returning")
+        return
     
+    im = nibabel.load(path_image_in)
+    target_affine = np.asarray([[resolution[0], 0, 0], [0, resolution[1], 0], [0, 0, resolution[2]]])
+    im_out = nilearn.image.resample_img(im, target_affine=target_affine, interpolation=interpolation, copy_header=True, force_resample=True)
+    nibabel.save(im_out, path_image_out)
+
+def process_upper_lower_implants_crowns_bridges(path_input_label, path_output_label, overwrite: bool = False):
+    """
+    Set upper jaw implants to upper jaw bone value; set lower jaw implants to lower jaw value, and set upper jaw bridges/crowns to upper 
+    teeth value; set lower jaw bridges/crowns to lower teeth value.
+
+    Args:
+        path_input_label (Path): Path to the input label image
+        path_output_all_labels (Path): Path to the output label image
+        overwrite (bool, optional): Overwrite existing files?. Defaults to False.
+    """
+    if path_output_label.exists() and not overwrite:
+        logging.debug(f"{path_output_label} exists and is not to be overwritten - returning")
+        return
+    
+    im = nibabel.load(path_input_label)
+
+    im_data = im.get_fdata()
+    
+    if np.max(np.astype(im_data, int)) == 4:
+        logging.info(f"{path_input_label.name} does not contain implants or bridges. Copied labelled image.")
+        shutil.copy(path_input_label, path_output_label)
+        return
+
+    im_data_out = np.astype(im_data, int)
+
+    # Labels
+    # Lower jaw = 1, upper jaw = 2, Implant (in jaw bone) == 5
+    lower_jaw = np.where(im_data_out == 1, 1, 0)
+    upper_jaw = np.where(im_data_out == 2, 1, 0)
+    
+    if 5 in im_data_out:
+        implants = np.where(im_data_out == 5, 1, 0)
+        labelled_implants, n_implants = label(implants)
+
+        for l in range(1, n_implants + 1):
+            implant = np.where(labelled_implants == l, 1, 0)
+            implant_dil = deepcopy(implant)
+
+            while np.max(implant_dil + lower_jaw) == 1 and np.max(implant_dil + upper_jaw) == 1:
+                implant_dil = binary_dilation(implant_dil)
+                if np.max(implant_dil + lower_jaw) == 2:
+                    im_data_out = np.where(implant, 1, im_data_out)
+                elif np.max(implant_dil + upper_jaw) == 2:
+                    im_data_out = np.where(implant, 2, im_data_out)
+
+    if 6 in im_data_out:
+        replacements = np.where(im_data_out == 6, 1, 0)
+        labelled_replacements, n_replacements = label(replacements)
+
+        for l in range(1, n_replacements + 1):
+            replacement = np.where(labelled_replacements == l, 1, 0)
+            replacement_dil = deepcopy(replacement)
+
+            while np.max(replacement_dil + lower_jaw) == 1 and np.max(replacement_dil + upper_jaw) == 1:
+                replacement_dil = binary_dilation(replacement_dil)
+                if np.max(replacement_dil + lower_jaw) == 2:
+                    im_data_out = np.where(replacement, 3, im_data_out)
+                elif np.max(replacement_dil + upper_jaw) == 2:
+                    im_data_out = np.where(replacement, 4, im_data_out)
+    
+    im_out = nibabel.Nifti1Image(im_data_out, im.affine, im.header, dtype=im.header.get_data_dtype())
+    nibabel.save(im_out, path_output_label)
+
+
+def tooth_centre_signed_distance(path_input_label: Path, path_output_all_labels: Path, overwrite: bool = False):
+    """
+    Create signed distance image maps for tooth centres.
+
+    Args:
+        path_input_label (Path): Path to the input label image
+        path_output_all_labels (Path): Path to the output label image
+        overwrite (bool, optional): Overwrite existing files?. Defaults to False.
+    """
+    if path_output_all_labels.exists() and not overwrite:
+        logging.debug(f"{path_output_all_labels} exists and is not to be overwritten - returning")
+        return
+        
+    im = nibabel.load(path_input_label)
+
+    im_data = im.get_fdata()
+    im_all_labels = np.empty(shape=im_data.shape, dtype=im.header.get_data_dtype())
+
+    # Teeth are labelled 11-47, and related pulp == (tooth + 100)
+    # For each - get centre of tooth, dilate to a small circle of ~1mm diameter (2 iterations), calculate distance from each voxel to this circle.
+    # Additionally create a review image of all tooth centres.
+    for l in range(11, 48):
+        if l in im_data:
+            mask = np.where(np.logical_or(im_data == l, im_data == l+100), 1, 0)
+            center_of_tooth = np.rint(center_of_mass(mask))
+            
+            mask_out = np.empty(shape=im_data.shape, dtype=im.header.get_data_dtype())
+            mask_out[int(center_of_tooth[0]), int(center_of_tooth[1]), int(center_of_tooth[2])] = 1
+            mask_out = binary_dilation(mask_out, iterations=2)
+
+            im_all_labels = np.where(mask_out == 1, l, im_all_labels)  # Add label to review image.
+
+            itk_image = sitk.GetImageFromArray(np.astype(mask_out, int))
+            itk_smdm_out = sitk.SignedMaurerDistanceMap(itk_image, insideIsPositive=True, squaredDistance=False, useImageSpacing=True)
+
+            im_out = nibabel.Nifti1Image(sitk.GetArrayViewFromImage(itk_smdm_out), im.affine, im.header, dtype=im.header.get_data_dtype())
+            nibabel.save(im_out, path_output_all_labels.parent / f"{path_output_all_labels.stem}_{l}.nii.gz")
+
+    im_out = nibabel.Nifti1Image(im_all_labels, im.affine, im.header, dtype=im.header.get_data_dtype())
+    nibabel.save(im_out, path_output_all_labels)
+
 
 def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
          path_original_labels: Path = Path("C:/data/tf3/labelsTr"), 
@@ -47,7 +213,10 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
          overwrite: bool = False):
     """
     Run ToothFairy3 preprocessing:
-     - Extract specific labels to construct test models
+     - Create Right-or-Left-Mirrored (RoLM) versions of images and labels.
+     - Create low resolution localisation/intialisation images.
+     - Create per-tooth centre signed distance maps
+
 
     Args:
         path_original_images (Path): Path to original image directory.
@@ -67,70 +236,92 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
     assert path_original_images.exists(), f"Data directory {path_original_images} is missing - can not continue."
     assert path_original_labels.exists(), f"Data directory {path_original_labels} is missing - can not continue."
 
-    # Create reflected images and labels
-    path_images_mirrored =  path_output_dir / "images_mirrored" 
-    path_labels_mirrored =  path_output_dir / "labels_mirrored" 
+    # Create reflected images and labels (ROLM - right or left mirrored)
+    path_images_rolm =  path_output_dir / "images_rolm" 
+    path_labels_rolm =  path_output_dir / "labels_rolm" 
 
+    path_images_rolm.mkdir(exist_ok=True, parents=True)
+    path_labels_rolm.mkdir(exist_ok=True, parents=True)
 
-    # TODO: reflect images and labels, converting left/right as necessary.
+    case_ids = [x.name.split(".")[0] for x in list(path_original_labels.glob(f"*{metadata['file_ending']}"))][:1]
 
-    # Gross labels - maxilla, mandible, lower teeth, upper teeth (for localisation)
-    path_labels_gross = path_output_dir / "labelsTr_gross" 
-    path_labels_gross.mkdir(exist_ok=True, parents=True)
+    # Set up left/right label reversing
+    label_lookup_rolm = {}
+    for k, v in metadata["labels"].items():
+        if "Left" in k:
+            k_right = str(k).replace("Left", "Right")
+            label_lookup_rolm[v] = metadata["labels"][k_right]
 
-    updated_gross_labels = {}
-    gross_label_lookup = {}
+        elif "Right" in k:
+            k_left = str(k).replace("Right", "Left")
+            label_lookup_rolm[v] = metadata["labels"][k_left]
+        
+        else:
+            label_lookup_rolm[v] = metadata["labels"][k]
 
+    # Set up localiser labels and folders
+    # Create reflected images and labels (ROLM - right or left mirrored)
+    path_images_loc =  path_output_dir / "images_localiser_rolm" 
+    path_labels_loc =  path_output_dir / "labels_localiser_rolm" 
+
+    path_images_loc.mkdir(exist_ok=True, parents=True)
+    path_labels_loc.mkdir(exist_ok=True, parents=True)
+
+    label_lookup_localisation = {}
     for k, v in metadata["labels"].items():
         if k == "Lower Jawbone":
-            updated_gross_labels[k] = 1
-            gross_label_lookup[1] = [v]
-        if k == "Upper Jawbone":
-            updated_gross_labels[k] = 2
-            gross_label_lookup[2] = [v]
-        if "Upper" in k and ("Molar" in k or "Incisor" in k or "Canine" in k or "Premolar" in k):
-            updated_gross_labels[k] = 3
-            gross_label_lookup[3] = [v]
-        if "Lower" in k and ("Molar" in k or "Incisor" in k or "Canine" in k or "Premolar" in k):
-            updated_gross_labels[k] = 4
-            gross_label_lookup[4] = [v]
-        else:
-            continue
+            label_lookup_localisation[v] = 1
+        elif k == "Upper Jawbone":
+            label_lookup_localisation[v] = 2
+        elif "Lower" in k:
+            label_lookup_localisation[v] = 3
+        elif "Upper" in k:
+            label_lookup_localisation[v] = 4
+        elif k == "Implant":
+            label_lookup_localisation[v] = 5
+        elif k == "Bridge" or k == "Crown":
+            label_lookup_localisation[v] = 6
 
-    with (path_labels_gross / "updated_labels.json").open("w") as j:
-        json.dump(updated_gross_labels, j)
+    # Set up for tooth centre map creation
+    path_tooth_centre_sd = path_output_dir / "labels_tooth_centre_sd"
+    path_tooth_centre_sd.mkdir(exist_ok=True, parents=True)
 
-    for path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))):
-        replace_labels(path_in, path_labels_gross / path_in.name, gross_label_lookup, overwrite=overwrite) 
+    def _run_case(case_id):
+        if not (path_images_rolm / f"{case_id}.nii.gz").exists():
+            shutil.copy(path_original_images / f"{case_id}_0000.nii.gz", path_images_rolm / f"{case_id}.nii.gz")
+        if not (path_labels_rolm / f"{case_id}.nii.gz").exists():
+            shutil.copy(path_original_labels / f"{case_id}.nii.gz", path_labels_rolm / f"{case_id}.nii.gz")
 
-    # # Bony anatomy - Combine pulps and teeth into single shapes (intending to find pulps later)
-    # # Setting labels as consecutive.
+        reflect_image(path_images_rolm / f"{case_id}.nii.gz", path_images_rolm / f"{case_id}_mirrored.nii.gz")
 
-    # path_labels_bony = path_output_dir / "labelsTr_bony"
-    # path_labels_bony.mkdir(exist_ok=True, parents=True)
-    
-    # updated_bony_labels = {}
-    # bony_label_lookup = {}
+        if not (path_labels_rolm / f"{case_id}_mirrored.nii.gz").exists() or overwrite:
+            reflect_image(path_labels_rolm / f"{case_id}.nii.gz", path_labels_rolm / f"{case_id}_m1.nii.gz")
+            replace_labels(path_labels_rolm / f"{case_id}_m1.nii.gz", path_labels_rolm / f"{case_id}_mirrored.nii.gz", label_lookup_rolm, overwrite=overwrite)
+        
+        for suffix in ["", "_mirrored"]:
+            # Construct localisation model images - low resolution, teeth (inc bridges, crowns) + bones.
+            if not (path_labels_loc / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
+                resample_image(path_images_rolm / f"{case_id}{suffix}.nii.gz", path_images_loc / f"{case_id}{suffix}_res.nii.gz", (1, 1, 1), "continuous", overwrite=overwrite)
+                resample_image(path_labels_rolm / f"{case_id}{suffix}.nii.gz", path_labels_loc / f"{case_id}{suffix}_res.nii.gz", (1, 1, 1), "nearest", overwrite=overwrite)
 
-    # i = 0
+                # Manage labels, upper and lower row implants/crowns etc.
+                replace_labels(path_labels_loc / f"{case_id}{suffix}_res.nii.gz", path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", label_lookup_localisation, overwrite=overwrite)
+                process_upper_lower_implants_crowns_bridges(path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", path_labels_loc / f"{case_id}{suffix}.nii.gz", overwrite=overwrite)
+            
+            # Construct tooth centre signed distance maps
+            if not (path_tooth_centre_sd / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
+                tooth_centre_signed_distance(path_labels_rolm / f"{case_id}{suffix}.nii.gz",  path_tooth_centre_sd / f"{case_id}{suffix}.nii.gz")
 
-    # for k, v in metadata["labels"].items():
-    #     if "Sinus" in k or "Canal" in k or "Pharynx" in k:
-    #         continue
+        
+            # Tidy up interim files as necessary:
+            (path_images_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
+            (path_labels_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
+            (path_images_loc / f"{case_id}{suffix}_res.nii.gz").unlink(missing_ok=True)
+            (path_labels_loc / f"{case_id}{suffix}_res.nii.gz").unlink(missing_ok=True)
+            (path_images_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
+            (path_labels_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
 
-    #     if "Pulp" in k:
-    #         tooth = k.removesuffix(" Pulp")
-    #         bony_label_lookup[updated_bony_labels[tooth]].append(v)
-    #     else:
-    #         updated_bony_labels[k] = i
-    #         bony_label_lookup[i] = [v]
-    #         i = i + 1
-
-    # with (path_labels_bony / "updated_labels.json").open("w") as j:
-    #     json.dump(updated_bony_labels, j)
-
-    # for  path_in in tqdm(list(path_original_labels.glob(f"*{metadata['file_ending']}"))):
-    #     replace_labels(path_in, path_labels_bony / path_in.name, bony_label_lookup, overwrite=overwrite) 
+    Parallel(n_jobs=8)(delayed(_run_case)(c) for c in tqdm(case_ids))
 
 
 if __name__ == "__main__":
