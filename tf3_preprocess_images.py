@@ -76,11 +76,12 @@ def replace_labels(path_input_label: Path, path_output_label: Path, label_lookup
     im_out = nibabel.Nifti1Image(im_data_out, im.affine, im.header, dtype=im.header.get_data_dtype())
     nibabel.save(im_out, path_output_label)
 
-def resample_image(path_image_in: Path, 
-                   path_image_out: Path, 
-                   resolution: tuple[float] = (1, 1, 1), 
-                   interpolation: Literal["continuous", "linear", "nearest"] = "continuous", 
-                   overwrite: bool = False):
+def resample_image_and_label(path_image_in: Path, 
+                             path_label_in: Path,
+                             path_image_out: Path,
+                             path_label_out: Path,
+                             resolution: tuple[float] = (1, 1, 1), 
+                             overwrite: bool = False):
     """
     Resample nifti image to given resolution and using the given interpolation method.
 
@@ -96,9 +97,15 @@ def resample_image(path_image_in: Path,
         return
     
     im = nibabel.load(path_image_in)
+    lab = nibabel.load(path_label_in)
+    
     target_affine = np.asarray([[resolution[0], 0, 0], [0, resolution[1], 0], [0, 0, resolution[2]]])
-    im_out = nilearn.image.resample_img(im, target_affine=target_affine, interpolation=interpolation, copy_header=True, force_resample=True)
+
+    im_out = nilearn.image.resample_img(im, target_affine=target_affine, interpolation="continuous", copy_header=True, force_resample=True)
+    lab_out = nilearn.image.resample_to_img(lab, im, "nearest", force_resample=True, copy_header=True)
+    
     nibabel.save(im_out, path_image_out)
+    nibabel.save(lab_out, path_label_out)
 
 def process_upper_lower_implants_crowns_bridges(path_input_label, path_output_label, overwrite: bool = False):
     """
@@ -134,8 +141,8 @@ def process_upper_lower_implants_crowns_bridges(path_input_label, path_output_la
         implants = np.where(im_data_out == 5, 1, 0)
         labelled_implants, n_implants = label(implants)
 
-        for l in range(1, n_implants + 1):
-            implant = np.where(labelled_implants == l, 1, 0)
+        for lab in range(1, n_implants + 1):
+            implant = np.where(labelled_implants == lab, 1, 0)
             implant_dil = deepcopy(implant)
 
             while np.max(implant_dil + lower_jaw) == 1 and np.max(implant_dil + upper_jaw) == 1:
@@ -149,8 +156,8 @@ def process_upper_lower_implants_crowns_bridges(path_input_label, path_output_la
         replacements = np.where(im_data_out == 6, 1, 0)
         labelled_replacements, n_replacements = label(replacements)
 
-        for l in range(1, n_replacements + 1):
-            replacement = np.where(labelled_replacements == l, 1, 0)
+        for lab in range(1, n_replacements + 1):
+            replacement = np.where(labelled_replacements == lab, 1, 0)
             replacement_dil = deepcopy(replacement)
 
             while np.max(replacement_dil + lower_jaw) == 1 and np.max(replacement_dil + upper_jaw) == 1:
@@ -172,14 +179,15 @@ def per_tooth_image_mask_sd(path_input_image: Path,
                             roi_size: tuple[int] = (96, 96, 96), 
                             overwrite: bool = False):
     """
-    
+    Calculate per-tooth distance maps (for landmark detection), cropped images + cropped tooth/pulp segmentations + cropped distance maps.
 
     Args:
-        path_input_image (Path): _description_
-        path_input_label (Path): _description_
-        path_per_tooth_image_dir (Path): _description_
-        path_per_tooth_label_dir (Path): _description_
-        path_sd_map_dir (Path): _description_
+        path_input_image (Path): Path to input image. (CASE_ID is input_image stem)
+        path_input_label (Path): Path to input label.
+        path_per_tooth_image_dir (Path): Output directory for per tooth images (as {CASE_ID}_{LABEL}.nii.gz).
+        path_per_tooth_label_dir (Path): Output directory for per tooth labels (as {CASE_ID}_{LABEL}.nii.gz) (0 == background, 1 == tooth, 2 == pulp).
+        path_sd_map_dir (Path): Output directory for per tooth signed distance maps (as {CASE_ID}_{LABEL}.nii.gz). 
+            {CASE_ID}_{LABEL}_cropped.nii.gz will also be created in this directory.
         roi_size (tuple[int], optional): _description_. Defaults to (96, 96, 96).
         overwrite (bool, optional): _description_. Defaults to False.
     """
@@ -197,25 +205,26 @@ def per_tooth_image_mask_sd(path_input_image: Path,
             path_tooth_ct_out = path_per_tooth_image_dir / f"{output_stem}_{lab}.nii.gz"
             path_tooth_labels_out = path_per_tooth_label_dir / f"{output_stem}_{lab}.nii.gz"
             path_tooth_sd_out = path_sd_map_dir / f"{output_stem}_{lab}.nii.gz"
+            path_tooth_sd_cropped_out = path_sd_map_dir / f"{output_stem}_{lab}_cropped.nii.gz"
 
             if not overwrite:
-                if path_tooth_ct_out.exists() and path_tooth_labels_out.exists() and path_tooth_sd_out.exists():
+                if path_tooth_ct_out.exists() and path_tooth_labels_out.exists() and path_tooth_sd_out.exists() and path_tooth_sd_cropped_out.exists():
                     logging.debug(f"{output_stem}_{lab} files exist and are not to be overwritten - skipping.")
                     continue
 
             mask = np.where(np.logical_or(im_label_data == lab, im_label_data == lab+100), 1, 0)
             center_of_tooth = np.rint(center_of_mass(mask))
 
+            im_ct = nibabel.load(path_input_image)
+            i0 = max(int(center_of_tooth[0]) - int(roi_size[0] / 2), 0)
+            i1 = min(int(center_of_tooth[0]) + int(roi_size[0] / 2), im_ct.shape[0])
+            j0 = max(int(center_of_tooth[1]) - int(roi_size[1] / 2), 0)
+            j1 = min(int(center_of_tooth[1]) + int(roi_size[1] / 2), im_ct.shape[1])
+            k0 = max(int(center_of_tooth[2]) - int(roi_size[2] / 2), 0)
+            k1 = min(int(center_of_tooth[2]) + int(roi_size[2] / 2), im_ct.shape[2])
+
             # Crop image to small patch around centre of tooth. Create tooth/pulp labels (1 and 2, respectively). Ensure sliced region isn't outside image bounds.
             if (not path_tooth_ct_out.exists() and not path_tooth_labels_out.exists()) or overwrite:
-                im_ct = nibabel.load(path_input_image)
-                i0 = max(int(center_of_tooth[0]) - int(roi_size[0] / 2), 0)
-                i1 = min(int(center_of_tooth[0]) + int(roi_size[0] / 2), im_ct.shape[0])
-                j0 = max(int(center_of_tooth[1]) - int(roi_size[1] / 2), 0)
-                j1 = min(int(center_of_tooth[1]) + int(roi_size[1] / 2), im_ct.shape[0])
-                k0 = max(int(center_of_tooth[2]) - int(roi_size[2] / 2), 0)
-                k1 = min(int(center_of_tooth[2]) + int(roi_size[2] / 2), im_ct.shape[0])
-
                 im_ct_cropped = im_ct.slicer[i0:i1, j0:j1, k0:k1]
                 nibabel.save(im_ct_cropped, path_tooth_ct_out)
 
@@ -227,6 +236,7 @@ def per_tooth_image_mask_sd(path_input_image: Path,
                 nibabel.save(nii_mask_tooth_cropped, path_tooth_labels_out)
 
             # Create signed distance map per tooth.
+            nii_sd_out = None
             if not path_tooth_sd_out.exists() or overwrite:
                 sd_out = np.empty(shape=im_label_data.shape, dtype=im_label.header.get_data_dtype())
                 sd_out[int(center_of_tooth[0]), int(center_of_tooth[1]), int(center_of_tooth[2])] = 1
@@ -239,9 +249,19 @@ def per_tooth_image_mask_sd(path_input_image: Path,
 
                 nii_sd_out = nibabel.Nifti1Image(sitk.GetArrayViewFromImage(itk_smdm_out), im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
                 nibabel.save(nii_sd_out, path_tooth_sd_out)
-
-    im_out = nibabel.Nifti1Image(im_all_labels, im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
-    nibabel.save(im_out, path_sd_map_dir / f"{output_stem}_all_landmarks.nii.gz")
+            
+            # TODO - concantenate with the above, remove "nii_sd_out = None" + next two lines
+            if not path_tooth_sd_cropped_out.exists() or overwrite:
+                if nii_sd_out is None:
+                    nii_sd_out = nibabel.load(path_tooth_sd_out)
+                
+                nii_tooth_sd_cropped = nii_sd_out.slicer[i0:i1, j0:j1, k0:k1]
+                nibabel.save(nii_tooth_sd_cropped, path_tooth_sd_cropped_out)
+    
+    if not (path_sd_map_dir / f"{output_stem}_all_landmarks.nii.gz").exists() or overwrite:
+        if np.max(im_all_labels) > 0:
+            im_out = nibabel.Nifti1Image(im_all_labels, im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
+            nibabel.save(im_out, path_sd_map_dir / f"{output_stem}_all_landmarks.nii.gz")
 
 
 def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
@@ -281,7 +301,7 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
     path_images_rolm.mkdir(exist_ok=True, parents=True)
     path_labels_rolm.mkdir(exist_ok=True, parents=True)
 
-    case_ids = [x.name.split(".")[0] for x in list(path_original_labels.glob(f"*{metadata['file_ending']}"))][:1]
+    case_ids = [x.name.split(".")[0] for x in list(path_original_labels.glob(f"*{metadata['file_ending']}"))]
 
     # Set up left/right label reversing
     label_lookup_rolm = {}
@@ -344,8 +364,12 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
         for suffix in ["", "_mirrored"]:
             # Construct localisation model images - low resolution, teeth (inc bridges, crowns) + bones.
             if not (path_labels_loc / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
-                resample_image(path_images_rolm / f"{case_id}{suffix}.nii.gz", path_images_loc / f"{case_id}{suffix}_res.nii.gz", (1, 1, 1), "continuous", overwrite=overwrite)
-                resample_image(path_labels_rolm / f"{case_id}{suffix}.nii.gz", path_labels_loc / f"{case_id}{suffix}_res.nii.gz", (1, 1, 1), "nearest", overwrite=overwrite)
+                resample_image_and_label(path_images_rolm / f"{case_id}{suffix}.nii.gz",
+                                         path_labels_rolm / f"{case_id}{suffix}.nii.gz",
+                                         path_images_loc / f"{case_id}{suffix}.nii.gz",
+                                         path_labels_loc / f"{case_id}{suffix}_res.nii.gz",
+                                         (1,1,1),
+                                         overwrite)
 
                 # Manage labels, upper and lower row implants/crowns etc.
                 replace_labels(path_labels_loc / f"{case_id}{suffix}_res.nii.gz", path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", label_lookup_localisation, overwrite=overwrite)
@@ -358,7 +382,6 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
             # Tidy up interim files as necessary:
             (path_images_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
             (path_labels_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
-            (path_images_loc / f"{case_id}{suffix}_res.nii.gz").unlink(missing_ok=True)
             (path_labels_loc / f"{case_id}{suffix}_res.nii.gz").unlink(missing_ok=True)
             (path_images_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
             (path_labels_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
