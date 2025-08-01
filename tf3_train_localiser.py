@@ -1,4 +1,4 @@
-import json
+import yaml
 import logging
 from pathlib import Path
 import random
@@ -264,32 +264,12 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
 
     path_data_dir = Path("C:/data/tf3")
 
-    # Get labels etc. from dataset json
-    path_images = path_data_dir / "imagesTr"
-    path_labels = path_data_dir / "labelsTr"
-
     assert path_data_dir.exists(), f"Data directory {path_data_dir} is missing - can not continue."
 
     # Create or load case IDs and train/test/val split
-    path_case_ids_json = path_data_dir / "case_id_lists.json"
-    if not path_case_ids_json.exists():
-        # Get case IDs, shuffle and distribute into train/test/validate - 70%/15%/15% split. 
-        case_ids = [label.name.split("_mirrored.nii.gz")[0] for label in path_labels.glob("*_mirrored.nii.gz")]
-        assert all([(path_images / f"{case_id}.nii.gz").exists() for case_id in case_ids])
-        assert all([(path_labels / f"{case_id}.nii.gz").exists() for case_id in case_ids])
-        assert all([(path_labels / f"{case_id}_mirrored.nii.gz").exists() for case_id in case_ids])
-        random.shuffle(case_ids)
-
-        d_case_ids = {}
-        d_case_ids["train"] = case_ids[:int(len(case_ids)*0.7)]
-        d_case_ids["val"] = case_ids[int(len(case_ids)*0.7):int(len(case_ids)*0.85)]
-        d_case_ids["test"] = case_ids[int(len(case_ids)*0.85):]
-
-        with path_case_ids_json.open("w") as f:
-            json.dump(f, d_case_ids)
-    else:
-        with path_case_ids_json.open("r") as f:
-            d_case_ids = json.load(f)
+    path_case_ids_yaml = path_data_dir / "case_id_lists.yaml"
+    with path_case_ids_yaml.open("r") as f:
+        d_case_ids = yaml.load(f)
 
     n_labels = 5
     
@@ -342,15 +322,15 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
     ld_val = []
     ld_test = []
 
-    for c in case_ids_train:
+    for c in d_case_ids["train"]:
         ld_train.append({"image": path_localiser_images / f"{c}.nii.gz", "label": path_localiser_labels / f"{c}.nii.gz"})
         ld_train.append({"image": path_localiser_images / f"{c}_mirrored.nii.gz", "label": path_localiser_labels / f"{c}_mirrored.nii.gz"})
 
-    for c in case_ids_val:
+    for c in d_case_ids["val"]:
         ld_val.append({"image": path_localiser_images / f"{c}.nii.gz", "label": path_localiser_labels / f"{c}.nii.gz"})
         ld_val.append({"image": path_localiser_images / f"{c}_mirrored.nii.gz", "label": path_localiser_labels / f"{c}_mirrored.nii.gz"})
 
-    for c in case_ids_test:
+    for c in d_case_ids["test"]:
         ld_test.append({"image": path_data_dir / "images_rolm" / f"{c}.nii.gz", "label": path_localiser_labels / f"{c}.nii.gz"})
         ld_test.append({"image": path_localiser_images / f"{c}_mirrored.nii.gz", "label": path_localiser_labels / f"{c}_mirrored.nii.gz"})
 

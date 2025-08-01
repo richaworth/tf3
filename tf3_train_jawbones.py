@@ -1,8 +1,8 @@
 import logging
-import json
 from pathlib import Path
 import random
 import shutil
+import yaml
 
 from monai.losses.dice import DiceCELoss
 
@@ -282,7 +282,6 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
                         format="%(asctime)s [%(levelname)s] %(message)s", 
                         handlers=[logging.FileHandler(path_output_dir / "logs/localiser_training_log.txt"), logging.StreamHandler()])
     deterministic_seed = 0
-    random.seed(deterministic_seed)
 
     path_data_dir = Path("C:/data/tf3")
 
@@ -292,25 +291,10 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
     assert path_data_dir.exists(), f"Data directory {path_data_dir} is missing - can not continue."
     
     # Create or load case IDs and train/test/val split
-    path_case_ids_json = path_data_dir / "case_id_lists.json"
-    if not path_case_ids_json.exists():
-        # Get case IDs, shuffle and distribute into train/test/validate - 70%/15%/15% split. 
-        case_ids = [label.name.split("_mirrored.nii.gz")[0] for label in path_labels.glob("*_mirrored.nii.gz")]
-        assert all([(path_images / f"{case_id}.nii.gz").exists() for case_id in case_ids])
-        assert all([(path_labels / f"{case_id}.nii.gz").exists() for case_id in case_ids])
-        assert all([(path_labels / f"{case_id}_mirrored.nii.gz").exists() for case_id in case_ids])
-        random.shuffle(case_ids)
+    path_case_ids_yaml = path_data_dir / "case_id_lists.yaml"
 
-        d_case_ids = {}
-        d_case_ids["train"] = case_ids[:int(len(case_ids)*0.7)]
-        d_case_ids["val"] = case_ids[int(len(case_ids)*0.7):int(len(case_ids)*0.85)]
-        d_case_ids["test"] = case_ids[int(len(case_ids)*0.85):]
-
-        with path_case_ids_json.open("w") as f:
-            json.dump(f, d_case_ids)
-    else:
-        with path_case_ids_json.open("r") as f:
-            d_case_ids = json.load(f)
+    with path_case_ids_yaml.open("r") as f:
+        d_case_ids = dict(yaml.safe_load(f))
 
     n_labels = 9  # Jaw bones are 1, 2. Implants are 10. Canals are 3, 4, 103, 104, 105. Background is 0.
     

@@ -1,4 +1,4 @@
-import json
+import yaml
 import os
 from pathlib import Path
 import random
@@ -76,7 +76,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_output"), overwrite: bool = F
 
     path_data_dir = Path("C:/data/tf3")
 
-    # Get labels etc. from dataset json
+    # Get labels etc. from dataset yaml
     path_images = path_data_dir / "imagesTr"
     path_labels = path_data_dir / "labelsTr"
     path_bony_labels = path_data_dir / "labelsTr_bony"
