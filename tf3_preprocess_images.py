@@ -363,17 +363,17 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
         
         for suffix in ["", "_mirrored"]:
             # Construct localisation model images - low resolution, teeth (inc bridges, crowns) + bones.
-            if not (path_labels_loc / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
-                resample_image_and_label(path_images_rolm / f"{case_id}{suffix}.nii.gz",
-                                         path_labels_rolm / f"{case_id}{suffix}.nii.gz",
-                                         path_images_loc / f"{case_id}{suffix}.nii.gz",
-                                         path_labels_loc / f"{case_id}{suffix}_res.nii.gz",
-                                         (1,1,1),
-                                         overwrite)
+            # if not (path_labels_loc / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
+            #     resample_image_and_label(path_images_rolm / f"{case_id}{suffix}.nii.gz",
+            #                              path_labels_rolm / f"{case_id}{suffix}.nii.gz",
+            #                              path_images_loc / f"{case_id}{suffix}.nii.gz",
+            #                              path_labels_loc / f"{case_id}{suffix}_res.nii.gz",
+            #                              (1,1,1),
+            #                              overwrite)
 
-                # Manage labels, upper and lower row implants/crowns etc.
-                replace_labels(path_labels_loc / f"{case_id}{suffix}_res.nii.gz", path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", label_lookup_localisation, overwrite=overwrite)
-                process_upper_lower_implants_crowns_bridges(path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", path_labels_loc / f"{case_id}{suffix}.nii.gz", overwrite=overwrite)
+            #     # Manage labels, upper and lower row implants/crowns etc.
+            #     replace_labels(path_labels_loc / f"{case_id}{suffix}_res.nii.gz", path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", label_lookup_localisation, overwrite=overwrite)
+            #     process_upper_lower_implants_crowns_bridges(path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", path_labels_loc / f"{case_id}{suffix}.nii.gz", overwrite=overwrite)
             
             # Construct tooth centre signed distance maps (does internal existence checking, so no need to put here).
             per_tooth_image_mask_sd(path_images_rolm / f"{case_id}{suffix}.nii.gz", path_labels_rolm / f"{case_id}{suffix}.nii.gz", 

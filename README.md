@@ -1,32 +1,16 @@
-# tf3
-MICCAI GC 2025 - Toothfairy 3
+For people running the scripts for me (I'm assuming Windows and no previous  - if you're on Linux, you can probably solve any minor discrepancies)
 
-Deadline for submission - 15th August 2025
+Initial steps:
+1. Download data and extract into C:\data\tf3
+2. Install Python 3.12 
+3. Install CUDA Toolkit
+4. Install cuDNN
+5. Copy readme, script, requirements.txt into C:\code\tf3
 
-! Pipeline
-Using the same kind of approach as described in "Coarse to Fine Vertebrae Localization and Segmentation
-with SpatialConfiguration-Net and U-Net" Payer et al 2020 (https://cpb-ap-se2.wpmucdn.com/blogs.auckland.ac.nz/dist/1/670/files/2020/06/2020PayerVISAPP.pdf)
+Command Line:
+6. run "cd C:\code\tf3"
+7. run "pip install requirements.txt"
+8. Follow the instructions here (https://pytorch.org/get-started/locally/) to install the correct version of Pytorch for your machine (in case it doesn't match mine). 
+9. run "python -m tf3_train_X.py" (Where X is replaced with the model name).
 
-1. Image -> Localisation model (bones OR bones+teeth) - get region of interest bounds, general shape.
-    - Requires images, bones (or bones+teeth) labels (potentially as signed distance images)
-    - Currently training.
-
-2. Image + localisation -> Jawbone segmentation (localisation result for bones + image in; bones out)
-    - TODO: Needs to be trained.
-
-3. Image + jawbone seg -> non-bony structures (canals, sinuses, implants)
-    - TODO: Non-bony structure label images to be created. Potentially two sets.
-    - TODO: Needs to be trained.
-
-4. Image + jawbone seg -> landmark finding network - if landmarks can be at the tooth/bone interface, this may be best (probably handles missing teeth reasonably)
-    - TODO: Requires per-tooth landmark labels (locate missing - probably manually or by warping).
-
-5. Image + jawbone seg + landmarks -> Per-tooth segmentation - one tooth model (or a small number of models), cortex and pulp, applied at each landmark.
-    - TODO: Requires per-tooth cropped label images + related CT. 
-    - TODO: Needs to be trained.
-    - Note: If landmark is within an implant/bridge, do not segment.
-    - TODO: Needs to be trained.
-
-6. Combine results and output.
-
-
+Once the script completes, there should be a small number of .pkl files in C:\data\tf3_X_output (where X is replaced with the model name). Send these to me via whatever method.
