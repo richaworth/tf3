@@ -2,7 +2,6 @@ from copy import deepcopy
 import json
 import logging
 import shutil
-from typing import Literal
 from joblib import Parallel, delayed
 import nibabel
 import nilearn.image

@@ -1,4 +1,5 @@
 import logging
+import json
 from pathlib import Path
 import random
 import shutil
@@ -53,7 +54,10 @@ def train_model(ld_train: list[dict],
                 n_labels: int, 
                 path_checkpoint_model: Path | None = None,
                 checkpoint_epoch: int | None = None,
-                deterministic_training_seed: int | None = 1):
+                deterministic_training_seed: int | None = 1,
+                n_workers: int = 4, 
+                batch_size: int = 4
+                ):
 
     set_determinism(deterministic_training_seed)
 
@@ -63,8 +67,8 @@ def train_model(ld_train: list[dict],
     train_ds = PersistentDataset(data=ld_train, transform=train_transforms, cache_dir=path_output_dir / f"cache_train_{model_name}")
     val_ds = PersistentDataset(data=ld_val, transform=val_transforms, cache_dir=path_output_dir / f"cache_val_{model_name}")
 
-    train_loader = DataLoader(train_ds, batch_size=4, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=n_workers)
 
     device = torch.device("cuda:0")
     model.to(device)
@@ -107,7 +111,6 @@ def train_model(ld_train: list[dict],
     path_previous_best_metric_opt = None
 
     path_final_model = path_output_dir / f"{model_name}.pkl"
-
 
     min_epochs = 0 if checkpoint_epoch is None else checkpoint_epoch
     
@@ -233,12 +236,13 @@ def test_model(ld_test: list[dict],
                preprocessing_transforms: list, 
                postprocessing_transforms: list, 
                n_labels: int,
-               overwrite: bool = False):
+               n_workers: int = 4, 
+               batch_size: int = 4):
     # Calculate DICE if possible
     dice_metric = DiceMetric(include_background=False, reduction="mean", num_classes=n_labels)
 
     test_ds = Dataset(data=ld_test, transform=Compose(preprocessing_transforms))
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=True, num_workers=1)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
 
     post_trans = Compose(postprocessing_transforms)
 
@@ -282,22 +286,31 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
 
     path_data_dir = Path("C:/data/tf3")
 
-    # Get labels etc. from dataset json
     path_images = path_data_dir / "images_rolm"
     path_labels = path_data_dir / "labels_rolm"
 
     assert path_data_dir.exists(), f"Data directory {path_data_dir} is missing - can not continue."
+    
+    # Create or load case IDs and train/test/val split
+    path_case_ids_json = path_data_dir / "case_id_lists.json"
+    if not path_case_ids_json.exists():
+        # Get case IDs, shuffle and distribute into train/test/validate - 70%/15%/15% split. 
+        case_ids = [label.name.split("_mirrored.nii.gz")[0] for label in path_labels.glob("*_mirrored.nii.gz")]
+        assert all([(path_images / f"{case_id}.nii.gz").exists() for case_id in case_ids])
+        assert all([(path_labels / f"{case_id}.nii.gz").exists() for case_id in case_ids])
+        assert all([(path_labels / f"{case_id}_mirrored.nii.gz").exists() for case_id in case_ids])
+        random.shuffle(case_ids)
 
-    # Get case IDs, shuffle and distribute into train/test/validate - 70%/15%/15% split. 
-    case_ids = [label.name.split("_mirrored.nii.gz")[0] for label in path_labels.glob("*_mirrored.nii.gz")]
-    assert all([(path_images / f"{case_id}.nii.gz").exists() for case_id in case_ids])
-    assert all([(path_labels / f"{case_id}.nii.gz").exists() for case_id in case_ids])
-    assert all([(path_labels / f"{case_id}_mirrored.nii.gz").exists() for case_id in case_ids])
-    random.shuffle(case_ids)
+        d_case_ids = {}
+        d_case_ids["train"] = case_ids[:int(len(case_ids)*0.7)]
+        d_case_ids["val"] = case_ids[int(len(case_ids)*0.7):int(len(case_ids)*0.85)]
+        d_case_ids["test"] = case_ids[int(len(case_ids)*0.85):]
 
-    case_ids_train = case_ids[:int(len(case_ids)*0.7)]
-    case_ids_val = case_ids[int(len(case_ids)*0.7):int(len(case_ids)*0.85)]
-    case_ids_test = case_ids[int(len(case_ids)*0.85):]
+        with path_case_ids_json.open("w") as f:
+            json.dump(f, d_case_ids)
+    else:
+        with path_case_ids_json.open("r") as f:
+            d_case_ids = json.load(f)
 
     n_labels = 9  # Jaw bones are 1, 2. Implants are 10. Canals are 3, 4, 103, 104, 105. Background is 0.
     
@@ -315,9 +328,9 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
         RemoveSmallObjectsd("localiser"),  # Clean small pockets of voxels in case these appear in localiser (unlikely)
         ScaleIntensityRanged("image", a_min=-1000, a_max=2000, b_min=0.0, b_max=1.0, clip=True),
         CropForegroundd(["image", "localiser", "label"], "localiser", margin=30, allow_smaller=True),
-        SaveImaged(keys=["image"], output_postfix="init_image"),
-        SaveImaged(keys=["localiser"], output_postfix="init_local"),
-        SaveImaged(keys=["label"], output_postfix="init_label"),
+        SaveImaged(keys=["image"], output_postfix="init_image"),  # Comment out unless testing.
+        SaveImaged(keys=["localiser"], output_postfix="init_local"),  # Comment out unless testing.
+        SaveImaged(keys=["label"], output_postfix="init_label"),  # Comment out unless testing.
     ]
 
     train_only_transforms = [            
@@ -331,7 +344,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
         RandGaussianSharpend(keys=["image"], prob=0.2)
     ]
 
-    # TODO: Convert to dict transforms; convert onehot to real labels again (potentially outside this transform - can use fuction from preprocess).
+    # TODO: Convert to dict transforms; convert onehot to real labels again (potentially outside this transform - can use fuction from tf3_preprocess_images.py).
     postprocessing_transforms = [
         AsDiscrete(argmax=True),
         SaveImage(output_dir=path_output_dir / "test_segmentations")
@@ -358,7 +371,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
     ld_test = []
 
     # Construct train/test/val split, per-tooth, lists of dicts
-    for case_ids, ld in [(case_ids_train, ld_train), (case_ids_val, ld_val), (case_ids_test, ld_test)]:
+    for case_ids, ld in [(d_case_ids["train"], ld_train), (d_case_ids["val"], ld_val), (d_case_ids["test"], ld_test)]:
         for c in case_ids:
             d = {"image": path_images / f"{c}.nii.gz", 
                 "label": path_labels / f"{c}.nii.gz", 
@@ -370,10 +383,10 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
             ld.append(dm)
 
     train_model(ld_train, ld_val, path_output_dir, model, "jaw_unetr_diceceloss", initial_transforms, train_only_transforms, n_labels,
-                deterministic_training_seed=deterministic_seed)
+                deterministic_training_seed=deterministic_seed, n_workers=1, batch_size=1)
     
     test_model(ld_test, path_output_dir / "jaw_unetr_diceceloss_best_metric.pkl", model, initial_transforms, postprocessing_transforms, 
-               n_labels)
+               n_labels, n_workers=1, batch_size=1)
 
     
 if __name__ == "__main__":
