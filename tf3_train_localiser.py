@@ -14,22 +14,24 @@ from monai.metrics.meandice import DiceMetric
 from monai.networks.nets.unetr import UNETR
 from monai.transforms import (
     AsDiscrete,
-    RandCropByPosNegLabeld,
+    AsDiscreted,
     Compose,
+    Invert,
+    KeepLargestConnectedComponent,
     LoadImaged,
-    SaveImage,
+    RandCropByPosNegLabeld,
     RandShiftIntensityd,
     ScaleIntensityRanged,
     Orientationd,
     RandAffined,
-    EnsureChannelFirstd,
-    SpatialPadd,
-    Spacingd,
     ResampleToMatchd,
     RandGaussianNoised,
     RandGaussianSmoothd,
     RandGaussianSharpend,
-    SaveImaged,
+    EnsureChannelFirstd,
+    SpatialPadd,
+    Spacingd,
+    SaveImage,
 )
 from monai.transforms.utils import allow_missing_keys_mode
 
@@ -73,7 +75,7 @@ def train_model(ld_train: list[dict],
     device = torch.device("cuda:0")
     model.to(device)
 
-    max_epochs = 1000
+    max_epochs = 200
     val_interval = 10
     checkpoint_interval = 10 # Save a checkpoint of the training in case restarting is required (temporary).
     major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
@@ -112,7 +114,7 @@ def train_model(ld_train: list[dict],
     path_previous_best_metric = None
     path_previous_best_metric_opt = None
 
-    path_final_model = path_output_dir / f"{model_name}.pkl"
+    path_final_model = path_output_dir / f"{model_name}_best_metric.pkl"
 
     min_epochs = 0 if checkpoint_epoch is None else checkpoint_epoch
     
@@ -156,7 +158,7 @@ def train_model(ld_train: list[dict],
         # Save checkpoint (deleting non-major checkpoints)
         if checkpoint_interval > 0 and (epoch + 1) % checkpoint_interval == 0:
             path_model_ckpt_new = path_output_dir / f"checkpoint_{model_name}_epoch_{epoch + 1}.pkl"
-            path_opt_ckpt_new = path_model_ckpt_new.parent / f"{path_model_ckpt_new.stem}_opt.{path_model_ckpt_new.suffix}"
+            path_opt_ckpt_new = path_model_ckpt_new.parent / f"{path_model_ckpt_new.stem}_opt{path_model_ckpt_new.suffix}"
             logging.info(f"Saving current checkpoint model: {path_model_ckpt_new}")
             logging.debug(f"Saving current checkpoint optimiser: {path_opt_ckpt_new}")
 
@@ -203,7 +205,7 @@ def train_model(ld_train: list[dict],
                     best_metrics_epochs[1].append(best_metric_epoch)
 
                     path_best_metric = path_output_dir / f"{model_name}_best_metric_epoch_{epoch + 1}.pkl"
-                    path_best_metric_opt = path_best_metric.parent / f"{path_best_metric.stem}_opt.{path_best_metric.suffix}"
+                    path_best_metric_opt = path_best_metric.parent / f"{path_best_metric.stem}_opt{path_best_metric.suffix}"
                     torch.save(model.state_dict(), path_best_metric)
                     torch.save(optimizer.state_dict(), path_best_metric_opt)
                     
@@ -244,7 +246,7 @@ def test_model(ld_test: list[dict],
                path_checkpoint_model: Path, 
                model, 
                preprocessing_transforms: list, 
-               postprocessing_transforms: list,
+               save_image_transforms: list, 
                n_labels: int,
                n_workers: int = 1,
                batch_size: int = 1,
@@ -253,7 +255,14 @@ def test_model(ld_test: list[dict],
     dice_metric = DiceMetric(include_background=False, reduction="mean", num_classes=n_labels)
 
     pre_trans = Compose(preprocessing_transforms)
-    post_trans = Compose(postprocessing_transforms)
+
+    test_ds = Dataset(data=ld_test, transform=pre_trans)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
+
+    save_trans = Compose(save_image_transforms)
+
+    post_label = AsDiscrete(to_onehot=n_labels)
+    post_pred = AsDiscrete(argmax=True, to_onehot=n_labels)
 
     # Run with allow_missing_keys_mode to allow us to use the same transforms as was used for training.
     with allow_missing_keys_mode(pre_trans):
@@ -271,14 +280,20 @@ def test_model(ld_test: list[dict],
                 if calculate_dice:
                     test_inputs, test_labels = (test_data["image"].to(device), test_data["label"].to(device))
                     test_outputs = sliding_window_inference(test_inputs, ROI_SIZE, 4, model, 0.5)
-                    test_outputs = [post_trans(i) for i in decollate_batch(test_outputs)]
-                
-                    dice_metric(y_pred=test_outputs, y=test_labels)
-                    print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.
-                else:
-                    test_inputs = (test_data["image"].to(device))
-                    test_outputs = sliding_window_inference(test_inputs, ROI_SIZE, 4, model, 0.5)
-                    _ = [post_trans(i) for i in decollate_batch(test_outputs)]
+            else:
+                test_outputs = sliding_window_inference(test_inputs, ROI_SIZE, 4, model, 0.5)
+            
+            test_labels_list = decollate_batch(test_labels)
+            test_labels_convert = [post_label(val_label_tensor) for val_label_tensor in test_labels_list]
+            test_outputs_list = decollate_batch(test_outputs)
+            test_output_convert = [post_pred(val_pred_tensor) for val_pred_tensor in test_outputs_list]
+            dice_metric(y_pred=test_output_convert, y=test_labels_convert)
+            print(dice_metric)  # TODO - get case id/image name and print with this. Save to CSV.       
+
+            save_trans(test_output_convert)
+            return 
+            
+  
 
 
 def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
@@ -332,9 +347,10 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
     ]
 
     # TODO: Test on original res images (downsample/upsample in Compose)
-    postprocessing_transforms = [
-        AsDiscrete(argmax=True, to_onehot=n_labels),
-        Spacingd(keys=["image"], pixdim=(0.3, 0.3, 0.3), mode="nearest"),
+    save_transform = [
+        AsDiscrete(to_onehot=True, argmax=True),
+        KeepLargestConnectedComponent(),
+        AsDiscrete(argmax=True),
         SaveImage(output_dir=path_output_dir / "test_segmentations", separate_folder=False, output_postfix="pred")
     ]
     
@@ -367,9 +383,11 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
     #     ld_val.append({"image": path_localiser_images / f"{c}.nii.gz", "label": path_localiser_labels / f"{c}.nii.gz"})
     #     ld_val.append({"image": path_localiser_images / f"{c}_mirrored.nii.gz", "label": path_localiser_labels / f"{c}_mirrored.nii.gz"})
 
-    for c in d_case_ids["train"] + d_case_ids["val"] + d_case_ids["test"]:
-        ld_test.append({"image": path_images / f"{c}.nii.gz"})
-        ld_test.append({"image": path_images / f"{c}_mirrored.nii.gz"})
+    for c in d_case_ids["test"]:
+        ld_test.append({"image": path_data_dir / "images_rolm" / f"{c}.nii.gz", "label": path_localiser_labels / f"{c}.nii.gz"})
+        ld_test.append({"image": path_localiser_images / f"{c}_mirrored.nii.gz", "label": path_localiser_labels / f"{c}_mirrored.nii.gz"})
+
+    ld_all = ld_train + ld_val + ld_test
 
     model_name = "localiser_unetr_diceceloss"
 
@@ -382,8 +400,8 @@ def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
     # train_model(ld_train, ld_val, path_output_dir, model, model_name, train_trans, val_trans, n_labels,
     #             deterministic_training_seed=deterministic_seed, n_workers=n_workers, batch_size=batch_size)
     
-    test_model(ld_test, path_output_dir / f"{model_name}_best_metric_epoch_100.pkl", model, val_trans, postprocessing_transforms, 
-               n_labels, n_workers=n_workers, batch_size=batch_size)
+    test_model(ld_all[:10], path_output_dir / f"{model_name}_best_metric.pkl", model, val_trans, save_transform, 
+               n_labels, n_workers=n_workers, batch_size=1)
 
     
 if __name__ == "__main__":
