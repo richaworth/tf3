@@ -151,31 +151,31 @@ def train_model(ld_train: list[dict],
         epoch_loss = 0
         step = 0
 
-        # for batch_data in tqdm(train_loader):
-        #     step += 1
-        #     inputs, labels = (batch_data["inputs"].to(device), batch_data["label"].to(device))
-        #     optimizer.zero_grad()
+        for batch_data in tqdm(train_loader):
+            step += 1
+            inputs, labels = (batch_data["inputs"].to(device), batch_data["label"].to(device))
+            optimizer.zero_grad()
 
-        #     if AMP:
-        #         with torch.autocast("cuda"):
-        #             outputs = model(inputs)
-        #             loss = loss_function(outputs, labels)
-        #         scaler.scale(loss).backward()
-        #         scaler.step(optimizer)
-        #         scaler.update()
-        #     else:
-        #         outputs = model(inputs)
-        #         loss = loss_function(outputs, labels)
-        #         loss.backward()
-        #         optimizer.step()
+            if AMP:
+                with torch.autocast("cuda"):
+                    outputs = model(inputs)
+                    loss = loss_function(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(inputs)
+                loss = loss_function(outputs, labels)
+                loss.backward()
+                optimizer.step()
 
-        #     epoch_loss += loss.item()
-        #     logging.debug(f"{step}/{len(train_ds) // train_loader.batch_size} train_loss: {loss.item():.4f}")
+            epoch_loss += loss.item()
+            logging.debug(f"{step}/{len(train_ds) // train_loader.batch_size} train_loss: {loss.item():.4f}")
 
-        # lr_scheduler.step()
-        # epoch_loss /= step
-        # epoch_loss_values.append(epoch_loss)
-        # logging.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
+        lr_scheduler.step()
+        epoch_loss /= step
+        epoch_loss_values.append(epoch_loss)
+        logging.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
 
         # Save checkpoint (deleting non-major checkpoints)
         if checkpoint_interval > 0 and (epoch + 1) % checkpoint_interval == 0:
@@ -295,13 +295,13 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.         
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_localiser_output/")):
+def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
     Args:
         path_output_dir (_type_, optional): Path to output directory (will create cache directories, test searches as necessary).
-            Defaults to Path("C:/data/tf3_localiser_output/").
+            Defaults to Path("C:/data/tf3_jawbones_output/").
     """
     (path_output_dir / "logs").mkdir(exist_ok=True, parents=True)
     logging.basicConfig(level=logging.INFO, 

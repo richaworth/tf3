@@ -18,8 +18,11 @@ with SpatialConfiguration-Net and U-Net" Payer et al 2020 (https://cpb-ap-se2.wp
     - TODO: Non-bony structure label images to be created. Potentially two sets.
     - TODO: Needs to be trained.
 
-4. Image + jawbone seg -> landmark finding network - if landmarks can be at the tooth/bone interface, this may be best (probably handles missing teeth reasonably)
-    - TODO: Requires per-tooth landmark labels (locate missing - probably manually or by warping).
+4. Image + teeth from localiser -> landmark finding network
+    - TODO: Construct an image full of -np.inf (will be clipped before training to zero) for any case without each given tooth
+    - Tight cropping around the teeth localiser    
+    - TODO: Needs to be written.
+    - TODO: Needs to be trained.
 
 5. Image + jawbone seg + landmarks -> Per-tooth segmentation - one tooth model (or a small number of models), cortex and pulp, applied at each landmark.
     - Requires per-tooth cropped label images + related CT (created)
