@@ -1,0 +1,9 @@
+# Exclude __pycache__ and .vscode
+.vscode/*
+__pycache__/*
+*/__pycache__/*
+
+# Exclude YOLO stuff
+runs/*
+yolo11l.pt
+yolo11n.pt

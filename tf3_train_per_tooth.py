@@ -10,6 +10,7 @@ from monai.data.dataset import PersistentDataset, Dataset
 from monai.data.dataloader import DataLoader
 from monai.inferers.utils import sliding_window_inference
 from monai.metrics.meandice import DiceMetric
+from monai.metrics.hausdorff_distance import HausdorffDistanceMetric
 from monai.networks.nets.unetr import UNETR
 
 from monai.transforms import (
@@ -44,6 +45,8 @@ import torch
 
 ROI_SIZE = (72, 72, 72)
 AMP = True
+DEVICE = "cuda:0"
+
            
 def train_model(ld_train: list[dict], 
                 ld_val: list[dict], 
@@ -71,13 +74,12 @@ def train_model(ld_train: list[dict],
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=n_workers)
 
-    # device = torch.device("cuda:0")  # TODO - return to cuda (CPU for testing on laptop ONLY)
-    device = torch.device("cpu")
+    device = torch.device(DEVICE)
     model.to(device)
 
-    max_epochs = 2
-    val_interval = 1
-    checkpoint_interval = 1 # Save a checkpoint of the training in case restarting is required (temporary).
+    max_epochs = 400
+    val_interval = 20
+    checkpoint_interval = 20 # Save a checkpoint of the training in case restarting is required (temporary).
     major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
     no_improvement_threshold = 5 # If no improvement in the metric within N validation cycles, stop training.
     
@@ -103,9 +105,10 @@ def train_model(ld_train: list[dict],
 
     post_trans = Compose([AsDiscrete(argmax=True, to_onehot=n_labels)])
     dice_metric = DiceMetric(include_background=False, reduction="mean", num_classes=n_labels)
+    hd95_metric = HausdorffDistanceMetric(percentile=95)
     
-    best_metric = -1
-    best_metric_epoch = -1
+    best_dsc = -1
+    best_dsc_epoch = -1
     best_metrics_epochs = [[], []]
     epoch_loss_values = []
     metric_values = []
@@ -187,14 +190,17 @@ def train_model(ld_train: list[dict],
                     val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
                     dice_metric(y_pred=val_outputs, y=val_labels)
 
-                metric = dice_metric.aggregate().item()
-                metric_values.append(metric)
+                    hd95_metric(y_pred=val_outputs, y=val_labels)
 
-                if metric > best_metric:
-                    best_metric = metric
-                    best_metric_epoch = epoch + 1
-                    best_metrics_epochs[0].append(best_metric)
-                    best_metrics_epochs[1].append(best_metric_epoch)
+                dsc = dice_metric.aggregate().item()
+                hd95 = hd95_metric.aggregate().item()
+                metric_values.append((dsc, hd95))
+
+                if dsc > best_dsc:
+                    best_dsc = dsc
+                    best_dsc_epoch = epoch + 1
+                    best_metrics_epochs[0].append(best_dsc)
+                    best_metrics_epochs[1].append(best_dsc_epoch)
 
                     path_best_metric = path_output_dir / f"{model_name}_best_metric_epoch_{epoch + 1}.pkl"
                     path_best_metric_opt = path_best_metric.parent / f"{path_best_metric.stem}_opt{path_best_metric.suffix}"
@@ -216,9 +222,10 @@ def train_model(ld_train: list[dict],
 
                 logging.info(
                     f"current epoch: {epoch + 1} current"
-                    f" mean dice: {metric:.4f}"
-                    f" best mean dice: {best_metric:.4f} "
-                    f"at epoch: {best_metric_epoch}"
+                    f" mean dice: {dsc:.4f}"
+                    f" mean hd95: {hd95:.4f}"
+                    f" best mean dice: {best_dsc:.4f} "
+                    f"at epoch: {best_dsc_epoch}"
                 )
 
                 if count_no_improvement == no_improvement_threshold:
@@ -226,7 +233,7 @@ def train_model(ld_train: list[dict],
                     shutil.move(path_previous_best_metric, path_final_model)
                     break
 
-    logging.info(f"Training completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")
+    logging.info(f"Training completed, best_metric: {best_dsc:.4f} at epoch: {best_dsc_epoch}")
     return (max_epochs, epoch_loss_values, metric_values, best_metrics_epochs)
 
 
@@ -291,7 +298,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
     assert path_data_dir.exists(), f"Data directory {path_data_dir} is missing - can not continue."
     
     # Create or load case IDs and train/test/val split
-    path_case_ids_yaml = path_data_dir / "case_id_lists_10_cases.yaml"
+    path_case_ids_yaml = path_data_dir / "case_id_lists.yaml"
 
     with path_case_ids_yaml.open("r") as f:
         d_case_ids = dict(yaml.safe_load(f))
@@ -349,8 +356,8 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
         hidden_size=768,
         mlp_dim=3072,
         num_heads=12,
-        proj_type="perceptron",
-        norm_name="instance",
+        proj_type="conv",
+        norm_name="batch",
         res_block=True,
         dropout_rate=0.0,
     )

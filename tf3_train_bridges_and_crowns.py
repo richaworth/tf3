@@ -10,15 +10,14 @@ from monai.data.dataset import PersistentDataset, Dataset
 from monai.data.dataloader import DataLoader
 from monai.inferers.utils import sliding_window_inference
 from monai.metrics.meandice import DiceMetric
+from monai.metrics.hausdorff_distance import HausdorffDistanceMetric
 from monai.networks.nets.unetr import UNETR
 from monai.config.type_definitions import KeysCollection
 
 from monai.transforms import (
-    AsDiscrete,  
-    ConcatItemsd,
+    AsDiscrete, 
     Compose, 
     CropForegroundd,
-    DeleteItemsd,
     EnsureChannelFirstd, 
     EnsureTyped,
     LabelFilterd, 
@@ -31,10 +30,10 @@ from monai.transforms import (
     RandGaussianSharpend,
     RandGaussianSmoothd,
     RandShiftIntensityd, 
-    RemoveSmallObjectsd, 
     ResampleToMatchd, 
     ScaleIntensityRanged,
-    SaveImage
+    SaveImage, 
+    SpatialPadd
 )
 
 from monai.utils.misc import set_determinism
@@ -45,6 +44,7 @@ import torch
 
 ROI_SIZE = (96, 96, 96)
 AMP = False
+DEVICE = "cuda:0"
 
 class EditLabelsd(MapTransform):
     """
@@ -94,13 +94,12 @@ def train_model(ld_train: list[dict],
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=n_workers)
 
-    # device = torch.device("cuda:0")  # TODO - return to cuda (CPU for testing on laptop ONLY)
-    device = torch.device("cpu")
+    device = torch.device(DEVICE)
     model.to(device)
 
-    max_epochs = 2
-    val_interval = 1
-    checkpoint_interval = 1 # Save a checkpoint of the training in case restarting is required (temporary).
+    max_epochs = 400
+    val_interval = 20
+    checkpoint_interval = 20 # Save a checkpoint of the training in case restarting is required (temporary).
     major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
     no_improvement_threshold = 5 # If no improvement in the metric within N validation cycles, stop training.
     
@@ -126,9 +125,10 @@ def train_model(ld_train: list[dict],
 
     post_trans = Compose([AsDiscrete(argmax=True, to_onehot=n_labels)])
     dice_metric = DiceMetric(include_background=False, reduction="mean", num_classes=n_labels)
+    hd95_metric = HausdorffDistanceMetric(percentile=95)
     
-    best_metric = -1
-    best_metric_epoch = -1
+    best_dsc = -1
+    best_dsc_epoch = -1
     best_metrics_epochs = [[], []]
     epoch_loss_values = []
     metric_values = []
@@ -150,7 +150,7 @@ def train_model(ld_train: list[dict],
 
         for batch_data in tqdm(train_loader):
             step += 1
-            inputs, labels = (batch_data["inputs"].to(device), batch_data["label"].to(device))
+            inputs, labels = (batch_data["image"].to(device), batch_data["label"].to(device))
             optimizer.zero_grad()
 
             if AMP:
@@ -199,7 +199,7 @@ def train_model(ld_train: list[dict],
             model.eval()
             with torch.no_grad():
                 for val_data in tqdm(val_loader):
-                    val_inputs, val_labels = (val_data["inputs"].to(device), val_data["label"].to(device))
+                    val_inputs, val_labels = (val_data["image"].to(device), val_data["label"].to(device))
                     
                     if AMP:
                         with torch.autocast("cuda"):
@@ -209,15 +209,17 @@ def train_model(ld_train: list[dict],
 
                     val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
                     dice_metric(y_pred=val_outputs, y=val_labels)
+                    hd95_metric(y_pred=val_outputs, y=val_labels)
 
-                metric = dice_metric.aggregate().item()
-                metric_values.append(metric)
+                dsc = dice_metric.aggregate().item()
+                hd95 = hd95_metric.aggregate().item()
+                metric_values.append((dsc, hd95))
 
-                if metric > best_metric:
-                    best_metric = metric
-                    best_metric_epoch = epoch + 1
-                    best_metrics_epochs[0].append(best_metric)
-                    best_metrics_epochs[1].append(best_metric_epoch)
+                if dsc > best_dsc:
+                    best_dsc = dsc
+                    best_dsc_epoch = epoch + 1
+                    best_metrics_epochs[0].append(best_dsc)
+                    best_metrics_epochs[1].append(best_dsc_epoch)
 
                     path_best_metric = path_output_dir / f"{model_name}_best_metric_epoch_{epoch + 1}.pkl"
                     path_best_metric_opt = path_best_metric.parent / f"{path_best_metric.stem}_opt{path_best_metric.suffix}"
@@ -239,9 +241,10 @@ def train_model(ld_train: list[dict],
 
                 logging.info(
                     f"current epoch: {epoch + 1} current"
-                    f" mean dice: {metric:.4f}"
-                    f" best mean dice: {best_metric:.4f} "
-                    f"at epoch: {best_metric_epoch}"
+                    f" mean dice: {dsc:.4f}"
+                    f" mean hd95: {hd95:.4f}"
+                    f" best mean dice: {best_dsc:.4f} "
+                    f"at epoch: {best_dsc_epoch}"
                 )
 
                 if count_no_improvement == no_improvement_threshold:
@@ -249,7 +252,7 @@ def train_model(ld_train: list[dict],
                     shutil.move(path_previous_best_metric, path_final_model)
                     break
 
-    logging.info(f"Training completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")
+    logging.info(f"Training completed, best_metric: {best_dsc:.4f} at epoch: {best_dsc_epoch}")
     return (max_epochs, epoch_loss_values, metric_values, best_metrics_epochs)
 
 
@@ -269,7 +272,7 @@ def test_model(ld_test: list[dict],
 
     post_trans = Compose(postprocessing_transforms)
 
-    device = torch.device("cuda:0")
+    device = torch.device(DEVICE)
     model.to(device)
 
     torch.load(path_checkpoint_model, model.state_dict(), weights_only=False)
@@ -278,7 +281,7 @@ def test_model(ld_test: list[dict],
     
     with torch.no_grad():
         for test_data in tqdm(test_loader):
-            test_inputs, test_labels = (test_data["inputs"].to(device), test_data["label"].to(device))
+            test_inputs, test_labels = (test_data["image"].to(device), test_data["label"].to(device))
                     
             if AMP:
                 with torch.autocast("cuda"):
@@ -292,13 +295,13 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.         
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
+def main(path_output_dir: Path = Path("C:/data/tf3_bridges_crowns_segment/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
     Args:
         path_output_dir (_type_, optional): Path to output directory (will create cache directories, test searches as necessary).
-            Defaults to Path("C:/data/tf3_jawbones_output/").
+            Defaults to Path("C:/data/tf3_bridges_crowns_segment/").
     """
     (path_output_dir / "logs").mkdir(exist_ok=True, parents=True)
     logging.basicConfig(level=logging.INFO, 
@@ -314,18 +317,16 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
     assert path_data_dir.exists(), f"Data directory {path_data_dir} is missing - can not continue."
     
     # Create or load case IDs and train/test/val split
-    path_case_ids_yaml = path_data_dir / "case_id_lists_10_cases.yaml"
+    path_case_ids_yaml = path_data_dir / "case_id_lists.yaml"
 
     with path_case_ids_yaml.open("r") as f:
         d_case_ids = dict(yaml.safe_load(f))
 
     # Image transforms (non-random first, so PersistentDataset can function)
     # Clipping/scaling HU - Metalwork is well above 2000 HU; though this model probably doesn't care about <0 HU. Consider 0-4000?
-
     # Bridge == 8, Crown == 9
-    filter_labels_local = [3, 4]
-    rename_labels_local = [(x, i + 1) for i, x in enumerate(filter_labels_local)]
-    
+
+    # Jaw bones are 1, 2. Implants are 10. Canals are 3, 4, 103, 104, 105.
     filter_labels = [8, 9]
     rename_labels = [(x, i + 1) for i, x in enumerate(filter_labels)]
     n_labels = len(rename_labels) + 1
@@ -335,16 +336,12 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
         EnsureChannelFirstd(keys=["image", "localiser", "label"]),
         Orientationd(keys=["image", "localiser", "label"], axcodes="RAS"),
         ResampleToMatchd("localiser", "image", mode="nearest", padding_mode="zeros"),
-        LabelFilterd("localiser", filter_labels_local), 
-        EditLabelsd("localiser", rename_labels_local),
         LabelFilterd("label", filter_labels), 
         EditLabelsd("label", rename_labels),
-        RemoveSmallObjectsd("localiser"),  # Clean small pockets of voxels in case these appear in localiser
         ScaleIntensityRanged("image", a_min=0, a_max=4000, b_min=0.0, b_max=1.0, clip=True),
-        CropForegroundd(["image", "localiser", "label"], "localiser", margin=20, allow_smaller=True),
-        # SaveImaged(keys=["image"], output_postfix="init_image"),  # Comment out unless testing.
-        # SaveImaged(keys=["localiser"], output_postfix="init_local"),  # Comment out unless testing.
-        # SaveImaged(keys=["label"], output_postfix="init_label"),  # Comment out unless testing.
+        CropForegroundd(["image", "label"], "label", margin=20, allow_smaller=True),  # This assumes the YOLO localisation is good. 
+        SpatialPadd(["image", "label"], ROI_SIZE),
+        EnsureTyped(keys="image", dtype=np.float32)
     ]
 
     train_only_transforms = [
@@ -356,16 +353,9 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
         RandGaussianNoised(keys=["image"], prob=0.2),
         RandGaussianSmoothd(keys=["image"], prob=0.2),
         RandGaussianSharpend(keys=["image"], prob=0.2),
-        ConcatItemsd(keys=["image", "localiser"], name="inputs"),
-        DeleteItemsd(keys=["image", "localiser"]),
     ]
 
-    test_val_only_transforms = [
-        ConcatItemsd(keys=["image", "localiser"], name="inputs"),
-        DeleteItemsd(keys=["image", "localiser"]),
-        EnsureTyped(keys="inputs", dtype=np.float32)
-    ]
-
+    test_val_only_transforms = []
     train_transforms = initial_transforms + train_only_transforms
     test_val_transforms = initial_transforms + test_val_only_transforms
 
@@ -376,9 +366,9 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
     ]
     
     model = UNETR(
-        in_channels=2,
+        in_channels=1,
         out_channels=n_labels,
-        img_size=(96, 96, 96),
+        img_size=ROI_SIZE,
         feature_size=16,
         hidden_size=768,
         mlp_dim=3072,
@@ -389,8 +379,6 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
         dropout_rate=0.0,
     )
 
-    path_localiser_labels = path_data_dir / "labels_localiser_rolm"
-
     ld_train = []
     ld_val = []
     ld_test = []
@@ -399,19 +387,20 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
     for case_ids, ld in [(d_case_ids["train"], ld_train), (d_case_ids["val"], ld_val), (d_case_ids["test"], ld_test)]:
         for c in case_ids:
             d = {"image": path_images / f"{c}.nii.gz", 
-                "label": path_labels / f"{c}.nii.gz", 
-                "localiser": path_localiser_labels / f"{c}.nii.gz"}
+                 "label": path_labels / f"{c}.nii.gz"}
             dm = {"image": path_images / f"{c}_mirrored.nii.gz", 
-                "label": path_labels / f"{c}_mirrored.nii.gz", 
-                "localiser": path_localiser_labels / f"{c}_mirrored.nii.gz"}
+                  "label": path_labels / f"{c}_mirrored.nii.gz"}
             ld.append(d)
             ld.append(dm)
 
+    n_workers = 4
+    batch_size = 4
+
     train_model(ld_train, ld_val, path_output_dir, model, "jaw_unetr_diceceloss", train_transforms, test_val_transforms, n_labels,
-                deterministic_training_seed=deterministic_seed, n_workers=1, batch_size=1, checkpoint_epoch=1, path_checkpoint_model=path_output_dir / "checkpoint_jaw_unetr_diceceloss_epoch_1.pkl")
+                deterministic_training_seed=deterministic_seed, n_workers=n_workers, batch_size=batch_size)
     
     test_model(ld_test, path_output_dir / "jaw_unetr_diceceloss_best_metric.pkl", model, test_val_transforms, postprocessing_transforms, 
-               n_labels, n_workers=1, batch_size=1)
+               n_labels, n_workers=n_workers, batch_size=1)
 
     
 if __name__ == "__main__":

@@ -235,7 +235,6 @@ def per_tooth_image_mask_sd(path_input_image: Path,
                 nibabel.save(nii_mask_tooth_cropped, path_tooth_labels_out)
 
             # Create signed distance map per tooth.
-            nii_sd_out = None
             if not path_tooth_sd_out.exists() or overwrite:
                 sd_out = np.empty(shape=im_label_data.shape, dtype=im_label.header.get_data_dtype())
                 sd_out[int(center_of_tooth[0]), int(center_of_tooth[1]), int(center_of_tooth[2])] = 1
@@ -248,12 +247,7 @@ def per_tooth_image_mask_sd(path_input_image: Path,
 
                 nii_sd_out = nibabel.Nifti1Image(sitk.GetArrayViewFromImage(itk_smdm_out), im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
                 nibabel.save(nii_sd_out, path_tooth_sd_out)
-            
-            # TODO - concantenate with the above, remove "nii_sd_out = None" + next two lines
-            if not path_tooth_sd_cropped_out.exists() or overwrite:
-                if nii_sd_out is None:
-                    nii_sd_out = nibabel.load(path_tooth_sd_out)
-                
+                            
                 nii_tooth_sd_cropped = nii_sd_out.slicer[i0:i1, j0:j1, k0:k1]
                 nibabel.save(nii_tooth_sd_cropped, path_tooth_sd_cropped_out)
     
@@ -263,8 +257,8 @@ def per_tooth_image_mask_sd(path_input_image: Path,
             nibabel.save(im_out, path_sd_map_dir / f"{output_stem}_all_landmarks.nii.gz")
 
 
-def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
-         path_original_labels: Path = Path("C:/data/tf3/labelsTr"), 
+def main(path_original_images: Path = Path("C:/data/tf3/images_rolm"),
+         path_original_labels: Path = Path("C:/data/tf3/labels_rolm"), 
          path_dataset_json: Path = Path("C:/data/tf3/dataset.json"), 
          path_output_dir: Path = Path("C:/data/tf3"),
          overwrite: bool = False):
@@ -316,28 +310,28 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
         else:
             label_lookup_rolm[v] = metadata["labels"][k]
 
-    # Set up localiser labels and folders
-    # Create reflected images and labels (ROLM - right or left mirrored)
-    path_images_loc =  path_output_dir / "images_localiser_rolm" 
-    path_labels_loc =  path_output_dir / "labels_localiser_rolm" 
+    # # Set up localiser labels and folders
+    # # Create reflected images and labels (ROLM - right or left mirrored)
+    # path_images_loc =  path_output_dir / "images_localiser_rolm" 
+    # path_labels_loc =  path_output_dir / "labels_localiser_rolm" 
 
-    path_images_loc.mkdir(exist_ok=True, parents=True)
-    path_labels_loc.mkdir(exist_ok=True, parents=True)
+    # path_images_loc.mkdir(exist_ok=True, parents=True)
+    # path_labels_loc.mkdir(exist_ok=True, parents=True)
 
-    label_lookup_localisation = {}
-    for k, v in metadata["labels"].items():
-        if k == "Lower Jawbone":
-            label_lookup_localisation[v] = 1
-        elif k == "Upper Jawbone":
-            label_lookup_localisation[v] = 2
-        elif "Lower" in k:
-            label_lookup_localisation[v] = 3
-        elif "Upper" in k:
-            label_lookup_localisation[v] = 4
-        elif k == "Implant":
-            label_lookup_localisation[v] = 5
-        elif k == "Bridge" or k == "Crown":
-            label_lookup_localisation[v] = 6
+    # label_lookup_localisation = {}
+    # for k, v in metadata["labels"].items():
+    #     if k == "Lower Jawbone":
+    #         label_lookup_localisation[v] = 1
+    #     elif k == "Upper Jawbone":
+    #         label_lookup_localisation[v] = 2
+    #     elif "Lower" in k:
+    #         label_lookup_localisation[v] = 3
+    #     elif "Upper" in k:
+    #         label_lookup_localisation[v] = 4
+    #     elif k == "Implant":
+    #         label_lookup_localisation[v] = 5
+    #     elif k == "Bridge" or k == "Crown":
+    #         label_lookup_localisation[v] = 6
 
     # Set up for tooth centre sd and per-tooth image/label pair creation
     path_per_tooth_image_dir = path_output_dir / "images_per_tooth_cropped"
@@ -349,41 +343,41 @@ def main(path_original_images: Path = Path("C:/data/tf3/imagesTr"),
     path_tooth_centre_sd.mkdir(exist_ok=True, parents=True)
 
     def _run_case(case_id):
-        if not (path_images_rolm / f"{case_id}.nii.gz").exists():
-            shutil.copy(path_original_images / f"{case_id}_0000.nii.gz", path_images_rolm / f"{case_id}.nii.gz")
-        if not (path_labels_rolm / f"{case_id}.nii.gz").exists():
-            shutil.copy(path_original_labels / f"{case_id}.nii.gz", path_labels_rolm / f"{case_id}.nii.gz")
+        # if not (path_images_rolm / f"{case_id}.nii.gz").exists():
+        #     shutil.copy(path_original_images / f"{case_id}_0000.nii.gz", path_images_rolm / f"{case_id}.nii.gz")
+        # if not (path_labels_rolm / f"{case_id}.nii.gz").exists():
+        #     shutil.copy(path_original_labels / f"{case_id}.nii.gz", path_labels_rolm / f"{case_id}.nii.gz")
 
-        reflect_image(path_images_rolm / f"{case_id}.nii.gz", path_images_rolm / f"{case_id}_mirrored.nii.gz")
+        # reflect_image(path_images_rolm / f"{case_id}.nii.gz", path_images_rolm / f"{case_id}_mirrored.nii.gz")
 
-        if not (path_labels_rolm / f"{case_id}_mirrored.nii.gz").exists() or overwrite:
-            reflect_image(path_labels_rolm / f"{case_id}.nii.gz", path_labels_rolm / f"{case_id}_m1.nii.gz")
-            replace_labels(path_labels_rolm / f"{case_id}_m1.nii.gz", path_labels_rolm / f"{case_id}_mirrored.nii.gz", label_lookup_rolm, overwrite=overwrite)
+        # if not (path_labels_rolm / f"{case_id}_mirrored.nii.gz").exists() or overwrite:
+        #     reflect_image(path_labels_rolm / f"{case_id}.nii.gz", path_labels_rolm / f"{case_id}_m1.nii.gz")
+        #     replace_labels(path_labels_rolm / f"{case_id}_m1.nii.gz", path_labels_rolm / f"{case_id}_mirrored.nii.gz", label_lookup_rolm, overwrite=overwrite)
         
         for suffix in ["", "_mirrored"]:
-            # Construct localisation model images - low resolution, teeth (inc bridges, crowns) + bones.
-            if not (path_labels_loc / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
-                resample_image_and_label(path_images_rolm / f"{case_id}{suffix}.nii.gz",
-                                         path_labels_rolm / f"{case_id}{suffix}.nii.gz",
-                                         path_images_loc / f"{case_id}{suffix}.nii.gz",
-                                         path_labels_loc / f"{case_id}{suffix}_res.nii.gz",
-                                         (1,1,1),
-                                         overwrite)
+            # # Construct localisation model images - low resolution, teeth (inc bridges, crowns) + bones.
+            # if not (path_labels_loc / f"{case_id}{suffix}.nii.gz").exists() or overwrite:
+            #     resample_image_and_label(path_images_rolm / f"{case_id}{suffix}.nii.gz",
+            #                              path_labels_rolm / f"{case_id}{suffix}.nii.gz",
+            #                              path_images_loc / f"{case_id}{suffix}.nii.gz",
+            #                              path_labels_loc / f"{case_id}{suffix}_res.nii.gz",
+            #                              (1,1,1),
+            #                              overwrite)
 
-                # Manage labels, upper and lower row implants/crowns etc.
-                replace_labels(path_labels_loc / f"{case_id}{suffix}_res.nii.gz", path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", label_lookup_localisation, overwrite=overwrite)
-                process_upper_lower_implants_crowns_bridges(path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", path_labels_loc / f"{case_id}{suffix}.nii.gz", overwrite=overwrite)
+            #     # Manage labels, upper and lower row implants/crowns etc.
+            #     replace_labels(path_labels_loc / f"{case_id}{suffix}_res.nii.gz", path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", label_lookup_localisation, overwrite=overwrite)
+            #     process_upper_lower_implants_crowns_bridges(path_labels_loc / f"{case_id}{suffix}_lab.nii.gz", path_labels_loc / f"{case_id}{suffix}.nii.gz", overwrite=overwrite)
             
-            # Construct tooth centre signed distance maps (does internal existence checking, so no need to put here).
+            # Construct tooth centre signed distance maps, cropped images, masks (does internal existence checking, so no need to put here).
             per_tooth_image_mask_sd(path_images_rolm / f"{case_id}{suffix}.nii.gz", path_labels_rolm / f"{case_id}{suffix}.nii.gz", 
                                     path_per_tooth_image_dir, path_per_tooth_label_dir, path_tooth_centre_sd, (96, 96, 96), overwrite)
         
             # Tidy up interim files as necessary:
             (path_images_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
             (path_labels_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
-            (path_labels_loc / f"{case_id}{suffix}_res.nii.gz").unlink(missing_ok=True)
-            (path_images_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
-            (path_labels_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
+            # (path_labels_loc / f"{case_id}{suffix}_res.nii.gz").unlink(missing_ok=True)
+            # (path_images_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
+            # (path_labels_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
 
     Parallel(n_jobs=1)(delayed(_run_case)(c) for c in tqdm(case_ids))
 

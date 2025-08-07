@@ -1,0 +1,13 @@
+# Train/val/test sets as 1) dir: path/to/imgs 
+
+path: C:/data/tf3/yolo_localiser_data_640 # dataset root dir
+train: train/axis_0/images # train images (relative to 'path') 4 images
+val: val/axis_0/images # val images (relative to 'path') 4 images
+test: test/axis_0/images # test images (optional)
+
+# Classes
+names:
+  0: lower_jaw
+  1: upper_jaw
+  2: lower_teeth
+  3: upper_teeth

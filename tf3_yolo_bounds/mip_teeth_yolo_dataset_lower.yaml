@@ -1,0 +1,29 @@
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+
+# YOLO expected dir structure
+# ../datasets/coco128/images/im0.jpg # Path to the image file
+# ../datasets/coco128/labels/im0.txt # Path to the corresponding label file
+
+path: C:/data/tf3/yolo_teeth_data_640 # dataset root dir
+train: train/lower_teeth/images # train images (relative to 'path')
+val: val/lower_teeth/images # val images (relative to 'path')
+test: test/lower_teeth/images # test images (relative to 'path')
+
+# Classes
+names:
+  0: right_central_incisor
+  1: right_lateral_incisor
+  2: right_canine
+  3: right_first_premolar
+  4: right_second_premolar
+  5: right_first_molar
+  6: right_second_molar
+  7: right_third_molar
+  8: left_central_incisor
+  9: left_lateral_incisor
+  10: left_canine
+  11: left_first_premolar
+  12: left_second_premolar
+  13: left_first_molar
+  14: left_second_molar
+  15: left_third_molar
