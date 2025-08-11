@@ -8,7 +8,7 @@ from tqdm import tqdm
 import yaml
 import imageio
 
-from yolo_utils import calculate_mip, calculate_2d_bounds_as_fraction
+from tf3_yolo_bounds.yolo_utils import calculate_mip, calculate_2d_bounds_as_fraction
 
 UPPER_LABELS = {11: 0, 12: 1, 13: 2, 14: 3, 15: 4, 16: 5, 17: 6, 18: 7, 
                 21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14, 28: 15} 
@@ -34,7 +34,6 @@ def main(path_images_in: Path = Path("C:/data/tf3/images_rolm"),
         path_yolo_out (Path): Path to output yolo training data. Defaults to "C:/data/tf3/yolo_localiser_data".
         target_size (int): Target size - single dimension, as all outputs will be forced square for YOLO training. Defaults to 512.
     """
-
 
     with path_case_ids_yaml.open("r") as f:
         d_case_ids = dict(yaml.safe_load(f))
@@ -90,8 +89,13 @@ def main(path_images_in: Path = Path("C:/data/tf3/images_rolm"),
                 lab_square_orig = np.pad(lab_array, ((pad_start_orig[0], pad_end_orig[0]), (pad_start_orig[1], pad_end_orig[1]), (pad_start_orig[2], pad_end_orig[2])))
 
                 # Construct cropping box (sf == slice fraction, cb = crop box)
+                # Mean interdental arch width == 61.25mm (https://pmc.ncbi.nlm.nih.gov/articles/PMC11351304/#sec3-biology-13-00569)
+                
+                # Min size == 61.25mm / 0.3mm voxel width == 210 voxels (rounded up).
+                # Margin to give a little leeway around larger full dental arches.
+                min_size = 210 
                 margin = 10
-                min_size = 270 # 80mm * 0.3 voxel size - rounded up slightly. Note - must be even.
+                
                 assert min_size < largest_dim_orig, "Longest uncropped image dimension can not be shorter than the minimum crop box."
 
                 if 2 in zbf_axis_0.keys() and 3 in zbf_axis_0.keys() and 2 in zbf_axis_1.keys() and 3 in zbf_axis_1.keys():
@@ -228,7 +232,7 @@ def main(path_images_in: Path = Path("C:/data/tf3/images_rolm"),
                     
 
     for split_name, case_ids in d_case_ids.items():
-        Parallel(n_jobs=1)(delayed(_run_case)(split_name, c) for c in tqdm(case_ids))
+        Parallel(n_jobs=8)(delayed(_run_case)(split_name, c) for c in tqdm(case_ids))
 
 if __name__ == "__main__":
     main()

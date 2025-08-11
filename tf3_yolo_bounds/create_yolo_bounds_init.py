@@ -9,7 +9,7 @@ import yaml
 import imageio
 import logging
 
-from yolo_utils import calculate_mip, calculate_2d_bounds_as_fraction
+from tf3_yolo_bounds.yolo_utils import calculate_mip, calculate_2d_bounds_as_fraction
 
 def main(path_images_in: Path = Path("C:/data/tf3/images_rolm"), 
          path_labels_in: Path = Path("C:/data/tf3/labels_localiser_rolm"), 

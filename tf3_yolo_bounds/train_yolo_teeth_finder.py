@@ -3,7 +3,7 @@ from pathlib import Path
 
 def main():
     for set in ["upper", "lower"]:
-        data_yaml = Path(f"C:/code/python/tf3/yolo_teeth_data_640/mip_teeth_yolo_dataset_{set}.yaml")
+        data_yaml = Path(f"C:/code/python/tf3/tf3_yolo_bounds/mip_teeth_yolo_dataset_{set}.yaml")
         output_dir = Path(f"C:/data/tf3/yolo_teeth_finder/{set}")
         output_dir.mkdir(exist_ok=True, parents=True)
         

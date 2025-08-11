@@ -23,7 +23,7 @@ from monai.transforms import (
     EnsureTyped,
     LoadImaged, 
     Orientationd, 
-    SpatialPad,
+    SpatialPadd,
     RandAffined, 
     RandSpatialCropd, 
     RandFlipd,
@@ -43,7 +43,7 @@ from tqdm import tqdm
 
 import torch
 
-ROI_SIZE = (72, 72, 72)
+ROI_SIZE = (80, 80, 80)
 AMP = True
 DEVICE = "cuda:0"
 
@@ -72,7 +72,7 @@ def train_model(ld_train: list[dict],
     val_ds = PersistentDataset(data=ld_val, transform=val_transforms, cache_dir=path_output_dir / f"cache_val_{model_name}")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=n_workers)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=n_workers)
 
     device = torch.device(DEVICE)
     model.to(device)
@@ -103,6 +103,7 @@ def train_model(ld_train: list[dict],
 
     scaler = torch.GradScaler("cuda") if AMP else None
 
+    post_label_trans = Compose([AsDiscrete(to_onehot=n_labels)])
     post_trans = Compose([AsDiscrete(argmax=True, to_onehot=n_labels)])
     dice_metric = DiceMetric(include_background=False, reduction="mean", num_classes=n_labels)
     hd95_metric = HausdorffDistanceMetric(percentile=95)
@@ -188,8 +189,8 @@ def train_model(ld_train: list[dict],
                         val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, 4, model, 0.75)
 
                     val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
+                    val_labels = [post_label_trans(i) for i in decollate_batch(val_labels)]
                     dice_metric(y_pred=val_outputs, y=val_labels)
-
                     hd95_metric(y_pred=val_outputs, y=val_labels)
 
                 dsc = dice_metric.aggregate().item()
@@ -276,13 +277,13 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.         
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
+def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
     Args:
         path_output_dir (_type_, optional): Path to output directory (will create cache directories, test searches as necessary).
-            Defaults to Path("C:/data/tf3_jawbones_output/").
+            Defaults to Path("C:/data/tf3_per_tooth_output/").
     """
     (path_output_dir / "logs").mkdir(exist_ok=True, parents=True)
     logging.basicConfig(level=logging.INFO, 
@@ -312,7 +313,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
         ResampleToMatchd(["localiser", "label"], "image", mode=("bilinear", "nearest"), padding_mode="zeros"),
         ScaleIntensityRanged("image", a_min=-1000, a_max=2000, b_min=0.0, b_max=1.0, clip=True),
         ScaleIntensityRanged("image", a_min=-50, a_max=0, b_min=0.0, b_max=1.0, clip=True),
-        SpatialPad(keys=["image", "localiser", "label"], spatial_size=ROI_SIZE),
+        SpatialPadd(keys=["image", "localiser", "label"], spatial_size=ROI_SIZE),
         # SaveImaged(keys=["image"], output_postfix="init_image"),  # Comment out unless testing.
         # SaveImaged(keys=["localiser"], output_postfix="init_local"),  # Comment out unless testing.
         # SaveImaged(keys=["label"], output_postfix="init_label"),  # Comment out unless testing.
@@ -356,8 +357,8 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
         hidden_size=768,
         mlp_dim=3072,
         num_heads=12,
-        proj_type="conv",
-        norm_name="batch",
+        proj_type="perceptron",
+        norm_name="instance",
         res_block=True,
         dropout_rate=0.0,
     )
@@ -371,22 +372,23 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_output/")):
     # Construct train/test/val split, per-tooth, lists of dicts
     for case_ids, ld in [(d_case_ids["train"], ld_train), (d_case_ids["val"], ld_val), (d_case_ids["test"], ld_test)]:
         for c in case_ids:
-            d = {"image": path_images / f"{c}.nii.gz", 
-                 "label": path_labels / f"{c}.nii.gz", 
-                 "localiser": path_tooth_centre_sd / f"{c}_cropped.nii.gz"}
-            dm = {"image": path_images / f"{c}_mirrored.nii.gz", 
-                 "label": path_labels / f"{c}_mirrored.nii.gz", 
-                 "localiser": path_tooth_centre_sd / f"{c}_cropped_mirrored.nii.gz"}
-            ld.append(d)
-            ld.append(dm)
+            for path_image in path_images.glob(f"{c}*.nii.gz"):
+                stem = path_image.name.split(".nii.gz")[0]
+
+                d = {"image": path_images / f"{stem}.nii.gz", 
+                    "label": path_labels / f"{stem}.nii.gz", 
+                    "localiser": path_tooth_centre_sd / f"{stem}_cropped.nii.gz"}
+
+                ld.append(d)
     
     mdoel_name = "per_tooth_unetr_diceceloss"
 
     train_model(ld_train, ld_val, path_output_dir, model, mdoel_name, train_transforms, test_val_transforms, n_labels,
-                deterministic_training_seed=deterministic_seed, n_workers=1, batch_size=1)
+                deterministic_training_seed=deterministic_seed, n_workers=4, batch_size=8, checkpoint_epoch=20,
+                path_checkpoint_model=path_output_dir / "checkpoint_per_tooth_unetr_diceceloss_epoch_20.pkl")
     
     test_model(ld_test, path_output_dir / f"{mdoel_name}_best_metric.pkl", model, test_val_transforms, postprocessing_transforms, 
-               n_labels, n_workers=1, batch_size=1)
+               n_labels, n_workers=4, batch_size=1)
 
 
 

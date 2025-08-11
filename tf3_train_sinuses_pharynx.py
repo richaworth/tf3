@@ -92,7 +92,7 @@ def train_model(ld_train: list[dict],
     val_ds = PersistentDataset(data=ld_val, transform=val_transforms, cache_dir=path_output_dir / f"cache_val_{model_name}")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=n_workers)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=n_workers)
 
     device = torch.device(DEVICE)
     model.to(device)
@@ -123,6 +123,7 @@ def train_model(ld_train: list[dict],
 
     scaler = torch.GradScaler("cuda") if AMP else None
 
+    post_label_trans = Compose([AsDiscrete(to_onehot=n_labels)])
     post_trans = Compose([AsDiscrete(argmax=True, to_onehot=n_labels)])
     dice_metric = DiceMetric(include_background=False, reduction="mean", num_classes=n_labels)
     hd95_metric = HausdorffDistanceMetric(percentile=95)
@@ -207,6 +208,7 @@ def train_model(ld_train: list[dict],
                     else:
                         val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, 4, model, 0.5)
 
+                    val_labels = [post_label_trans(i) for i in decollate_batch(val_labels)]
                     val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
                     dice_metric(y_pred=val_outputs, y=val_labels)
                     hd95_metric(y_pred=val_outputs, y=val_labels)

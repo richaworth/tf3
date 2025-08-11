@@ -4,7 +4,7 @@
 # ../datasets/coco128/images/im0.jpg # Path to the image file
 # ../datasets/coco128/labels/im0.txt # Path to the corresponding label file
 
-path: C:/data/tf3/yolo_teeth_data_640 # dataset root dir
+path: C:/data/tf3/yolo_teeth_data_640_3mm_slices # dataset root dir
 train: train/upper_teeth/images # train images (relative to 'path')
 val: val/upper_teeth/images # val images (relative to 'path')
 test: test/upper_teeth/images # test images (relative to 'path')
