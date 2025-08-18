@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import random
 import shutil
 import yaml
 
@@ -10,13 +11,14 @@ from monai.data.dataset import PersistentDataset, Dataset
 from monai.data.dataloader import DataLoader
 from monai.inferers.utils import sliding_window_inference
 from monai.metrics.meandice import DiceMetric
-from monai.metrics.hausdorff_distance import HausdorffDistanceMetric
 from monai.networks.nets.unetr import UNETR
 from monai.config.type_definitions import KeysCollection
 
 from monai.transforms import (
     AsDiscrete, 
     Compose, 
+    CopyItemsd,
+    DeleteItemsd,
     CropForegroundd,
     EnsureChannelFirstd, 
     EnsureTyped,
@@ -30,7 +32,8 @@ from monai.transforms import (
     RandGaussianSharpend,
     RandGaussianSmoothd,
     RandShiftIntensityd, 
-    ResampleToMatchd, 
+    Spacing,
+    Spacingd, 
     ScaleIntensityRanged,
     SaveImage, 
     SpatialPadd
@@ -42,8 +45,8 @@ from tqdm import tqdm
 
 import torch
 
-ROI_SIZE = (96, 96, 96)
-AMP = False
+ROI_SIZE = (80, 80, 80)
+AMP = True
 DEVICE = "cuda:0"
 
 class EditLabelsd(MapTransform):
@@ -88,8 +91,8 @@ def train_model(ld_train: list[dict],
     train_transforms = Compose(list_train_trans)
     val_transforms = Compose(lst_val_trans)
    
-    train_ds = Dataset(data=ld_train, transform=train_transforms)
-    val_ds = Dataset(data=ld_val, transform=val_transforms)
+    train_ds = PersistentDataset(data=ld_train, transform=train_transforms, cache_dir=path_output_dir / f"cache_train_{model_name}")
+    val_ds = PersistentDataset(data=ld_val, transform=val_transforms, cache_dir=path_output_dir / f"cache_val_{model_name}")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=n_workers)
@@ -97,12 +100,12 @@ def train_model(ld_train: list[dict],
     device = torch.device(DEVICE)
     model.to(device)
 
-    max_epochs = 400
-    val_interval = 20
-    checkpoint_interval = 20 # Save a checkpoint of the training in case restarting is required (temporary).
-    major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
+    max_epochs = 100
+    val_interval = 10
+    checkpoint_interval = 2 # Save a checkpoint of the training in case restarting is required (temporary).
+    major_checkpoint_interval = 50 # Save a permanent copy of the current training at major intervals.
     no_improvement_threshold = 5 # If no improvement in the metric within N validation cycles, stop training.
-    
+        
     loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
     torch.backends.cudnn.benchmark = True
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
@@ -114,19 +117,20 @@ def train_model(ld_train: list[dict],
         torch.load(path_checkpoint_model, model.state_dict())
         torch.load(path_opt_ckpt_previous, optimizer.state_dict())
         optimizer.param_groups[0]["initial_lr"] = 1e-4
+        min_epochs = checkpoint_epoch
     else:
         path_model_ckpt_previous = None
         path_opt_ckpt_previous = None
+        min_epochs = 0
 
-    lr_epoch = -1 if checkpoint_epoch is None else checkpoint_epoch -1
+    lr_epoch = min_epochs - 1
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, last_epoch=lr_epoch)
 
     scaler = torch.GradScaler("cuda") if AMP else None
 
-    post_label_trans = Compose([AsDiscrete(to_onehot=n_labels)])
+    post_label = AsDiscrete(to_onehot=n_labels)
     post_trans = Compose([AsDiscrete(argmax=True, to_onehot=n_labels)])
     dice_metric = DiceMetric(include_background=False, reduction="mean", num_classes=n_labels)
-    hd95_metric = HausdorffDistanceMetric(percentile=95)
     
     best_dsc = -1
     best_dsc_epoch = -1
@@ -138,8 +142,6 @@ def train_model(ld_train: list[dict],
     path_previous_best_metric_opt = None
 
     path_final_model = path_output_dir / f"{model_name}.pkl"
-
-    min_epochs = 0 if checkpoint_epoch is None else checkpoint_epoch
     
     for epoch in range(min_epochs, max_epochs):
         logging.info("-" * 10)
@@ -198,24 +200,23 @@ def train_model(ld_train: list[dict],
 
         if (epoch + 1) % val_interval == 0:
             model.eval()
+
             with torch.no_grad():
                 for val_data in tqdm(val_loader):
                     val_inputs, val_labels = (val_data["image"].to(device), val_data["label"].to(device))
                     
                     if AMP:
                         with torch.autocast("cuda"):
-                            val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, 4, model, 0.5)
+                            val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, 2, model, 0.5)
                     else:
-                        val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, 4, model, 0.5)
+                        val_outputs = sliding_window_inference(val_inputs, ROI_SIZE, 2, model, 0.5)
 
-                    val_labels = [post_label_trans(i) for i in decollate_batch(val_labels)]
+                    val_labels = [post_label(i) for i in decollate_batch(val_labels)]
                     val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
                     dice_metric(y_pred=val_outputs, y=val_labels)
-                    hd95_metric(y_pred=val_outputs, y=val_labels)
 
                 dsc = dice_metric.aggregate().item()
-                hd95 = hd95_metric.aggregate().item()
-                metric_values.append((dsc, hd95))
+                metric_values.append((dsc))
 
                 if dsc > best_dsc:
                     best_dsc = dsc
@@ -244,7 +245,6 @@ def train_model(ld_train: list[dict],
                 logging.info(
                     f"current epoch: {epoch + 1} current"
                     f" mean dice: {dsc:.4f}"
-                    f" mean hd95: {hd95:.4f}"
                     f" best mean dice: {best_dsc:.4f} "
                     f"at epoch: {best_dsc_epoch}"
                 )
@@ -297,18 +297,18 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.         
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_bridges_crowns_segment/")):
+def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
     Args:
         path_output_dir (_type_, optional): Path to output directory (will create cache directories, test searches as necessary).
-            Defaults to Path("C:/data/tf3_bridges_crowns_segment/").
+            Defaults to Path("C:/data/tf3_jawbones_output/").
     """
     (path_output_dir / "logs").mkdir(exist_ok=True, parents=True)
     logging.basicConfig(level=logging.INFO, 
                         format="%(asctime)s [%(levelname)s] %(message)s", 
-                        handlers=[logging.FileHandler(path_output_dir / "logs/localiser_training_log.txt"), logging.StreamHandler()])
+                        handlers=[logging.FileHandler(path_output_dir / "logs/gross_anatomy.txt"), logging.StreamHandler()])
     deterministic_seed = 0
 
     path_data_dir = Path("C:/data/tf3")
@@ -325,31 +325,35 @@ def main(path_output_dir: Path = Path("C:/data/tf3_bridges_crowns_segment/")):
         d_case_ids = dict(yaml.safe_load(f))
 
     # Image transforms (non-random first, so PersistentDataset can function)
-    # Clipping/scaling HU - Metalwork is well above 2000 HU; though this model probably doesn't care about <0 HU. Consider 0-4000?
-    # Bridge == 8, Crown == 9
+    # Clipping/scaling HU - No real reason for a_max to be above 2000 HU for localisation model (metalwork is included in the teeth/jaw labels).
 
-    # Jaw bones are 1, 2. Implants are 10. Canals are 3, 4, 103, 104, 105.
-    filter_labels = [8, 9]
+    # Excluding bridges/crowns, implants, canals, all other anatomy is in this model (due to time restrictions from server crashes and illness).
+    # Jaw bones are 1, 2. 
+    # Left Maxillary Sinus == 5, Right Maxillary Sinus == 6, Pharynx == 7
+    # NB: Canals are 3, 4, 103, 104, 105; bridges and crowns are 8 and 9.
+
+    filter_labels = [8, 9, 10]
     rename_labels = [(x, i + 1) for i, x in enumerate(filter_labels)]
     n_labels = len(rename_labels) + 1
 
     initial_transforms = [
-        LoadImaged(keys=["image", "localiser", "label"]),
-        EnsureChannelFirstd(keys=["image", "localiser", "label"]),
-        Orientationd(keys=["image", "localiser", "label"], axcodes="RAS"),
-        ResampleToMatchd("localiser", "image", mode="nearest", padding_mode="zeros"),
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        CopyItemsd(["label"], 1, ["foreground"]),
+        LabelFilterd("foreground", [1, 2]),
+        CropForegroundd(["image", "label"], "foreground"),
+        DeleteItemsd("foreground"),
         LabelFilterd("label", filter_labels), 
         EditLabelsd("label", rename_labels),
-        ScaleIntensityRanged("image", a_min=0, a_max=4000, b_min=0.0, b_max=1.0, clip=True),
-        CropForegroundd(["image", "label"], "label", margin=20, allow_smaller=True),  # This assumes the YOLO localisation is good. 
+        ScaleIntensityRanged("image", a_min=-1000, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
         SpatialPadd(["image", "label"], ROI_SIZE),
-        EnsureTyped(keys="image", dtype=np.float32)
     ]
 
     train_only_transforms = [
-        RandAffined(keys=["image", "localiser", "label"], mode=("bilinear", "nearest", "nearest"), prob=0.9, 
+        RandAffined(keys=["image", "label"], mode=("bilinear", "nearest"), prob=0.9, 
                     rotate_range=(np.pi/15, np.pi/15, np.pi/15), scale_range=(0.1, 0.1, 0.1)),            
-        RandCropByPosNegLabeld(keys=["image", "localiser", "label"], label_key="label", spatial_size=ROI_SIZE,
+        RandCropByPosNegLabeld(keys=["image", "label"], label_key="label", spatial_size=ROI_SIZE,
                                pos=1, neg=1, num_samples=4, allow_smaller=False),
         RandShiftIntensityd(keys=["image"], offsets=0.10, prob=0.90),
         RandGaussianNoised(keys=["image"], prob=0.2),
@@ -371,12 +375,12 @@ def main(path_output_dir: Path = Path("C:/data/tf3_bridges_crowns_segment/")):
         in_channels=1,
         out_channels=n_labels,
         img_size=ROI_SIZE,
-        feature_size=16,
+        feature_size=32,
         hidden_size=768,
         mlp_dim=3072,
         num_heads=12,
-        proj_type="conv",
-        norm_name="batch",
+        proj_type="perceptron",
+        norm_name="instance",
         res_block=True,
         dropout_rate=0.0,
     )
@@ -385,23 +389,23 @@ def main(path_output_dir: Path = Path("C:/data/tf3_bridges_crowns_segment/")):
     ld_val = []
     ld_test = []
 
-    # Construct train/test/val split, per-tooth, lists of dicts
+    # Construct train/test/val split, lists of dicts
     for case_ids, ld in [(d_case_ids["train"], ld_train), (d_case_ids["val"], ld_val), (d_case_ids["test"], ld_test)]:
         for c in case_ids:
             d = {"image": path_images / f"{c}.nii.gz", 
-                 "label": path_labels / f"{c}.nii.gz"}
+                "label": path_labels / f"{c}.nii.gz"}
             dm = {"image": path_images / f"{c}_mirrored.nii.gz", 
-                  "label": path_labels / f"{c}_mirrored.nii.gz"}
+                "label": path_labels / f"{c}_mirrored.nii.gz"}
             ld.append(d)
             ld.append(dm)
 
     n_workers = 4
     batch_size = 4
 
-    train_model(ld_train, ld_val, path_output_dir, model, "jaw_unetr_diceceloss", train_transforms, test_val_transforms, n_labels,
-                deterministic_training_seed=deterministic_seed, n_workers=n_workers, batch_size=batch_size)
+    train_model(ld_train, ld_val, path_output_dir, model, "bridges_crowns_implants", train_transforms, test_val_transforms, n_labels,
+                deterministic_training_seed=None, n_workers=n_workers, batch_size=batch_size)
     
-    test_model(ld_test, path_output_dir / "jaw_unetr_diceceloss_best_metric.pkl", model, test_val_transforms, postprocessing_transforms, 
+    test_model(ld_test, path_output_dir / "bridges_crowns_implants_best_metric_epoch_200.pkl", model, test_val_transforms, postprocessing_transforms, 
                n_labels, n_workers=n_workers, batch_size=1)
 
     
