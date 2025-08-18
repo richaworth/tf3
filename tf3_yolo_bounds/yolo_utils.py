@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 
 
@@ -70,6 +72,69 @@ def calculate_2d_bounds_as_fraction(label_array: np.ndarray,
         return output[0]
     else:
         return output
+
+
+def yolo_bounds_from_image(image: Path | np.ndarray,
+                           yolo_model,
+                           png_output_dir: Path | None = None,
+                           combine_multiple: bool = True,
+                           min_conf: float = 0.66) -> dict:
+    """
+    Run yolo.predict on an image, output review png and return a dict of boxes and confidences per label.
+    If a label is repeated in the yolo output, either combine these or return a list.
+
+    Args:
+        image: Path to input png image.
+        yolo_model: YOLO model to use for prediction.
+        png_output_dir: Path to output png image directory.
+        combine_multiple: If True - Combine all boxes with the same label, return the lowest confidence.
+            If False - Return all boxes as a list. Default is True.
+        min_conf: Minimum confidence threshold. Default is 0.66.
+
+    Returns:
+        Dict of box/boxes per label and their confidence values ({"box": box/boxes in xyxy format (measured in pixels);
+            "conf": confidence value for that box/those boxes}).
+    """
+
+
+    result = yolo_model(source=image, conf=min_conf, verbose=False)
+    output = {}
+
+    # Only passing one image at a time
+    r = result[0]
+
+    if png_output_dir is not None and isinstance(image, Path):
+        png_output_dir.mkdir(exist_ok=True, parents=True)
+        r.save(filename=png_output_dir / f"{image.stem}_out")
+
+    for box in r.boxes:
+        c = int(box.cls.item())
+        label = r.names[c]
+        conf = int(box.conf.item())
+
+        if label in output.keys() and combine_multiple:
+            if conf > output[label]["conf"]:
+                conf = output[label]["conf"]
+
+            bb_x0 = min(output[label]["box"][0], box[0])
+            bb_y0 = min(output[label]["box"][1], box[1])
+            bb_x1 = max(output[label]["box"][2], box[2])
+            bb_y1 = max(output[label]["box"][3], box[3])
+            bb = (bb_x0, bb_y0, bb_x1, bb_y1)
+
+            output[label] = {"box": bb, "conf": conf}
+        elif label in output.keys() and not combine_multiple:
+            if not isinstance(output[label]["box"], list):
+                output[label]["box"] = [output[label]["box"], box]
+                output[label]["conf"] = [output[label]["conf"], conf]
+            else:
+                output[label]["box"].append(box)
+                output[label]["conf"].append(conf)
+        else:
+            output[label] = {"box": box.xyxy, "conf": conf}
+
+
+    return output
     
 def calculate_2d_bounds_as_xywh(label_array: np.ndarray, 
                                 labels: int | list[int], 

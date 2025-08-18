@@ -32,7 +32,7 @@ def main(path_images_in: Path = Path("C:/data/tf3/images_rolm"),
         path_images_in (Path): Path to original image directory. Defaults to "C:/data/tf3/images_rolm".
         path_labels_in (Path): Path to original labels directory. Defaults to "C:/data/tf3/labels_localiser_rolm" (jaws + teeth combined labels).
         path_case_ids_yaml (Path): Path to yaml file containing case IDs for train/test/val split. Defaults to "C:/data/tf3/case_id_lists.yaml".
-        path_localiser_yolo_data: Path to localiser yolo data dir.
+        path_init_labels_in: Path to localiser yolo data dir.
         path_yolo_out (Path): Path to output yolo training data. Defaults to "C:/data/tf3/yolo_localiser_data".
         target_size (int): Target size - single dimension, as all outputs will be forced square for YOLO training. Defaults to 512.
     """
