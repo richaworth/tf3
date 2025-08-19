@@ -106,10 +106,6 @@ def main(path_images_in: Path = Path("C:/data/tf3/images_rolm"),
                 else:
                     z1 = min(z1 + context_slices, im_array.shape[2])
                     z0 = z0 + overlap_slices
-                
-                # # If, after these, there's no box, skip this case.
-                # if z1 <= z0: 
-                #     continue
 
                 im_array_z_crop = im_array[:, :, z0 : z1]
                 lab_array_z_crop = lab_array[:, :, z0 : z1]

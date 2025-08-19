@@ -26,34 +26,3 @@ class EditLabelsd(MapTransform):
             d[key] = result
             
         return d
-
-# TODO: This doesn't work, but isn't currently necessary.
-# class BinaryClosingd(MapTransform):
-#     """
-#     Apply binary closing (N erosions followed by N dilations) to one or more labels.
-#     """
-#     def __init__(self, keys: KeysCollection, list_target_labels: int | list[tuple], iterations: int = 2) -> None:
-#         super().__init__(keys)
-#         self.target_labels = [list_target_labels] if not isinstance(list_target_labels, list) else list_target_labels
-#         self.iterations = iterations
-
-#     def __call__(self, data):
-#         d = dict(data)
-
-#         for key in self.keys:
-#             # Erosion must be done in CPU if using scikit. 
-#             label_image = d[key].detach().cpu().numpy()
-#             result = np.zeros_like(label_image)
-
-#             # For each target label - get that label as a binary mask; apply erosions; apply dilations, add to the results image with original label value.
-#             for label in self.target_labels:
-#                 a = np.where(label_image == label, 1, 0)
-#                 a = binary_erosion(a, iterations=self.iterations)
-#                 a = binary_dilation(a, iterations=self.iterations)
-                
-#                 result = np.where(a, label, result)
-
-#             d[key] = torch.from_numpy(result)
-            
-#         return d
-

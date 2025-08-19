@@ -95,8 +95,6 @@ def yolo_bounds_from_image(image: Path | np.ndarray,
         Dict of box/boxes per label and their confidence values ({"box": box/boxes in xyxy format (measured in pixels);
             "conf": confidence value for that box/those boxes}).
     """
-
-
     result = yolo_model(source=image, conf=min_conf, verbose=False)
     output = {}
 
@@ -105,22 +103,25 @@ def yolo_bounds_from_image(image: Path | np.ndarray,
 
     if png_output_dir is not None and isinstance(image, Path):
         png_output_dir.mkdir(exist_ok=True, parents=True)
-        r.save(filename=png_output_dir / f"{image.stem}_out")
+        r.save(filename=png_output_dir / f"{image.stem}_out.png")
 
     for box in r.boxes:
         c = int(box.cls.item())
         label = r.names[c]
-        conf = int(box.conf.item())
+        conf = box.conf.item()
+
+        # Detach box and ensure in X0,Y0,X1,Y1 format
+        box = box.xyxy.detach().cpu().numpy()[0]
 
         if label in output.keys() and combine_multiple:
             if conf > output[label]["conf"]:
                 conf = output[label]["conf"]
 
-            bb_x0 = min(output[label]["box"][0], box[0])
-            bb_y0 = min(output[label]["box"][1], box[1])
-            bb_x1 = max(output[label]["box"][2], box[2])
-            bb_y1 = max(output[label]["box"][3], box[3])
-            bb = (bb_x0, bb_y0, bb_x1, bb_y1)
+            bb_x0 = np.min((output[label]["box"][0], box[0]))
+            bb_y0 = np.min((output[label]["box"][1], box[1]))
+            bb_x1 = np.max((output[label]["box"][2], box[2]))
+            bb_y1 = np.max((output[label]["box"][3], box[3]))
+            bb = np.asarray([bb_x0, bb_y0, bb_x1, bb_y1])
 
             output[label] = {"box": bb, "conf": conf}
         elif label in output.keys() and not combine_multiple:
@@ -131,8 +132,7 @@ def yolo_bounds_from_image(image: Path | np.ndarray,
                 output[label]["box"].append(box)
                 output[label]["conf"].append(conf)
         else:
-            output[label] = {"box": box.xyxy, "conf": conf}
-
+            output[label] = {"box": box, "conf": conf}
 
     return output
     
