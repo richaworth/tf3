@@ -3,18 +3,18 @@ from pathlib import Path
 
 def main():
     for set in ["upper", "lower"]:
-        data_yaml = Path(f"C:/code/python/tf3/tf3_yolo_bounds/mip_teeth_yolo_dataset_{set}.yaml")
-        output_dir = Path(f"C:/data/tf3/yolo_teeth_finder/{set}")
+        data_yaml = Path(f"C:/code/python/tf3/tf3_yolo_bounds/mip_teeth_yolo_dataset_{set}_sliced.yaml")
+        output_dir = Path(f"C:/data/tf3/yolo_teeth_finder_3mm_slices/{set}")
         output_dir.mkdir(exist_ok=True, parents=True)
         
         model = YOLO("yolo11l.pt", task="detect", verbose=True)
         result = model.train(data=data_yaml, 
                              epochs=800, 
-                             patience=50,
+                             patience=100,
                              imgsz=640, 
-                             batch=20, 
+                             batch=-1, 
                              seed=1, 
-                             overlap_mask=False, 
+                             overlap_mask=True, 
                              save_period=50, 
                              project=output_dir,
                              flipud=0,           # Invert Y - given we want to preserve the geometry, remove this.
@@ -27,8 +27,6 @@ def main():
                              hsv_h=0,            # Hue - not useful for greyscale images.
                              hsv_s=0,            # Saturation - not useful for greyscale images.
                              hsv_v=0.1,          # Brightness - given CBCT is in standardised units (HU), tweaking this more than marginally is pointless. 
-                             lr0=0.01,
-                             lrf=0.00001
                              )
 
 if __name__ == "__main__":

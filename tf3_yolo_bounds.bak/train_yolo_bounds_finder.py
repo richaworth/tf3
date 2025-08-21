@@ -9,8 +9,8 @@ def main():
         output_dir.mkdir(exist_ok=True, parents=True)
 
         # TODO = remove resume bodging
-        model_in = "yolo11l.pt"
-        training_epochs = 400
+        model_in = output_dir / "train" / "weights" / "last.pt" if (output_dir / "train" / "weights" / "last.pt").exists() else "yolo11l.pt"
+        training_epochs = 400 if model_in == "yolo11l.pt" else 100
         
         model = YOLO(model_in, task="detect", verbose=True)
         result = model.train(data=data_yaml, 

@@ -10,11 +10,11 @@ def main():
         model = YOLO("yolo11l.pt", task="detect", verbose=True)
         result = model.train(data=data_yaml, 
                              epochs=800, 
-                             patience=50,
+                             patience=100,
                              imgsz=640, 
-                             batch=20, 
+                             batch=-1, 
                              seed=1, 
-                             overlap_mask=False, 
+                             overlap_mask=True, 
                              save_period=50, 
                              project=output_dir,
                              flipud=0,           # Invert Y - given we want to preserve the geometry, remove this.
@@ -27,8 +27,6 @@ def main():
                              hsv_h=0,            # Hue - not useful for greyscale images.
                              hsv_s=0,            # Saturation - not useful for greyscale images.
                              hsv_v=0.1,          # Brightness - given CBCT is in standardised units (HU), tweaking this more than marginally is pointless. 
-                             lr0=0.01,
-                             lrf=0.00001
                              )
 
 if __name__ == "__main__":

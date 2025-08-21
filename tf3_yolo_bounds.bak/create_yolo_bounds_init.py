@@ -93,7 +93,7 @@ def main(path_images_in: Path = Path("C:/data/tf3/images_rolm"),
                 label_mip_out = resize(label_mips[a], (target_size, target_size))
 
                 # Save image MIP png - scale to [0, 4000] == [0, 255] for saving as png.
-                image_mip_out = image_mip_out * (255 / 4000)
+                image_mip_out = (image_mip_out) * (255 / 4000)
                 imageio.imwrite(path_image_mip_out, image_mip_out.astype('uint8'))
 
                 # Save mask review MIP png - scale to [0, 4] == [0, 255] for saving as png.

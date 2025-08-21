@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 import random
 import shutil
+import nibabel
 import yaml
 
 from monai.losses.dice import DiceCELoss
@@ -15,8 +16,12 @@ from monai.networks.nets.unetr import UNETR
 from monai.config.type_definitions import KeysCollection
 
 from monai.transforms import (
+    AddCoordinateChannelsd,
     AsDiscrete, 
     Compose, 
+    ConcatItemsd,
+    CopyItemsd,
+    DeleteItemsd,
     CropForegroundd,
     EnsureChannelFirstd, 
     EnsureTyped,
@@ -43,8 +48,7 @@ from tqdm import tqdm
 
 import torch
 
-# ROI_SIZE = (96, 96, 96)  # Version from 16/08/25; 11:25
-ROI_SIZE = (80, 80, 80)
+ROI_SIZE = (64, 64, 64)
 AMP = True
 DEVICE = "cuda:0"
 
@@ -82,8 +86,7 @@ def train_model(ld_train: list[dict],
                 checkpoint_epoch: int | None = None,
                 deterministic_training_seed: int | None = 1,
                 n_workers: int = 4, 
-                batch_size: int = 4,
-                max_epochs: int = 400,
+                batch_size: int = 4
                 ):
 
     set_determinism(deterministic_training_seed)
@@ -100,9 +103,10 @@ def train_model(ld_train: list[dict],
     device = torch.device(DEVICE)
     model.to(device)
 
-    val_interval = 1
+    max_epochs = 100
+    val_interval = 5
     checkpoint_interval = 2 # Save a checkpoint of the training in case restarting is required (temporary).
-    major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
+    major_checkpoint_interval = 50 # Save a permanent copy of the current training at major intervals.
     no_improvement_threshold = 5 # If no improvement in the metric within N validation cycles, stop training.
         
     loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
@@ -113,18 +117,17 @@ def train_model(ld_train: list[dict],
     if path_checkpoint_model is not None:
         path_model_ckpt_previous = path_checkpoint_model
         path_opt_ckpt_previous = path_checkpoint_model.parent / f"{path_checkpoint_model.stem}_opt{path_checkpoint_model.suffix}"
-        model.load_state_dict(torch.load(path_checkpoint_model, weights_only=True))
-
-        # torch.load(path_opt_ckpt_previous, optimizer.state_dict())
-        # optimizer.param_groups[0]["initial_lr"] = 1e-4
+        torch.load(path_checkpoint_model, model.state_dict())
+        torch.load(path_opt_ckpt_previous, optimizer.state_dict())
+        optimizer.param_groups[0]["initial_lr"] = 1e-4
         min_epochs = checkpoint_epoch
     else:
         path_model_ckpt_previous = None
         path_opt_ckpt_previous = None
         min_epochs = 0
-        
+
     lr_epoch = min_epochs - 1
-    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, last_epoch=lr_epoch)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, last_epoch=lr_epoch)
 
     scaler = torch.GradScaler("cuda") if AMP else None
 
@@ -151,59 +154,59 @@ def train_model(ld_train: list[dict],
         epoch_loss = 0
         step = 0
 
-        # for batch_data in tqdm(train_loader):
-        #     step += 1
-        #     inputs, labels = (batch_data["image"].to(device), batch_data["label"].to(device))
-        #     optimizer.zero_grad()
+        for batch_data in tqdm(train_loader):
+            step += 1
+            inputs, labels = (batch_data["inputs"].to(device), batch_data["label"].to(device))
+            optimizer.zero_grad()
 
-        #     if AMP:
-        #         with torch.autocast("cuda"):
-        #             outputs = model(inputs)
-        #             loss = loss_function(outputs, labels)
-        #         scaler.scale(loss).backward()
-        #         scaler.step(optimizer)
-        #         scaler.update()
-        #     else:
-        #         outputs = model(inputs)
-        #         loss = loss_function(outputs, labels)
-        #         loss.backward()
-        #         optimizer.step()
+            if AMP:
+                with torch.autocast("cuda"):
+                    outputs = model(inputs)
+                    loss = loss_function(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(inputs)
+                loss = loss_function(outputs, labels)
+                loss.backward()
+                optimizer.step()
 
-        #     epoch_loss += loss.item()
-        #     logging.debug(f"{step}/{len(train_ds) // train_loader.batch_size} train_loss: {loss.item():.4f}")
+            epoch_loss += loss.item()
+            logging.debug(f"{step}/{len(train_ds) // train_loader.batch_size} train_loss: {loss.item():.4f}")
 
-        # lr_scheduler.step()
-        # epoch_loss /= step
-        # epoch_loss_values.append(epoch_loss)
-        # logging.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
+        lr_scheduler.step()
+        epoch_loss /= step
+        epoch_loss_values.append(epoch_loss)
+        logging.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
 
-        # # Save checkpoint (deleting non-major checkpoints)
-        # if checkpoint_interval > 0 and (epoch + 1) % checkpoint_interval == 0:
-        #     path_model_ckpt_new = path_output_dir / f"checkpoint_{model_name}_epoch_{epoch + 1}.pkl"
-        #     path_opt_ckpt_new = path_model_ckpt_new.parent / f"{path_model_ckpt_new.stem}_opt{path_model_ckpt_new.suffix}"
-        #     logging.info(f"Saving current checkpoint model: {path_model_ckpt_new}")
-        #     logging.debug(f"Saving current checkpoint optimiser: {path_opt_ckpt_new}")
+        # Save checkpoint (deleting non-major checkpoints)
+        if checkpoint_interval > 0 and (epoch + 1) % checkpoint_interval == 0:
+            path_model_ckpt_new = path_output_dir / f"checkpoint_{model_name}_epoch_{epoch + 1}.pkl"
+            path_opt_ckpt_new = path_model_ckpt_new.parent / f"{path_model_ckpt_new.stem}_opt{path_model_ckpt_new.suffix}"
+            logging.info(f"Saving current checkpoint model: {path_model_ckpt_new}")
+            logging.debug(f"Saving current checkpoint optimiser: {path_opt_ckpt_new}")
 
-        #     torch.save(model.state_dict(), path_model_ckpt_new)
-        #     torch.save(optimizer.state_dict(), path_opt_ckpt_new)
+            torch.save(model.state_dict(), path_model_ckpt_new)
+            torch.save(optimizer.state_dict(), path_opt_ckpt_new)
 
-        #     if (epoch - checkpoint_interval + 1) % major_checkpoint_interval == 0:
-        #         logging.debug(f"Keeping major interval checkpoint model {path_model_ckpt_previous}.")
-        #     elif path_model_ckpt_previous is not None:
-        #         logging.debug(f"Removing previous checkpoint model {path_model_ckpt_previous}.")
-        #         logging.debug(f"Removing previous checkpoint optimiser {path_opt_ckpt_previous}.")
-        #         path_model_ckpt_previous.unlink()
-        #         path_opt_ckpt_previous.unlink()
+            if (epoch - checkpoint_interval + 1) % major_checkpoint_interval == 0:
+                logging.debug(f"Keeping major interval checkpoint model {path_model_ckpt_previous}.")
+            elif path_model_ckpt_previous is not None:
+                logging.debug(f"Removing previous checkpoint model {path_model_ckpt_previous}.")
+                logging.debug(f"Removing previous checkpoint optimiser {path_opt_ckpt_previous}.")
+                path_model_ckpt_previous.unlink()
+                path_opt_ckpt_previous.unlink()
             
-        #     path_model_ckpt_previous = path_model_ckpt_new
-        #     path_opt_ckpt_previous = path_opt_ckpt_new
+            path_model_ckpt_previous = path_model_ckpt_new
+            path_opt_ckpt_previous = path_opt_ckpt_new
 
         if (epoch + 1) % val_interval == 0:
             model.eval()
 
             with torch.no_grad():
                 for val_data in tqdm(val_loader):
-                    val_inputs, val_labels = (val_data["image"].to(device), val_data["label"].to(device))
+                    val_inputs, val_labels = (val_data["inputs"].to(device), val_data["label"].to(device))
                     
                     if AMP:
                         with torch.autocast("cuda"):
@@ -217,43 +220,42 @@ def train_model(ld_train: list[dict],
 
                 dsc = dice_metric.aggregate().item()
                 metric_values.append((dsc))
-                print(dsc)
 
-                # if dsc > best_dsc:
-                #     best_dsc = dsc
-                #     best_dsc_epoch = epoch + 1
-                #     best_metrics_epochs[0].append(best_dsc)
-                #     best_metrics_epochs[1].append(best_dsc_epoch)
+                if dsc > best_dsc:
+                    best_dsc = dsc
+                    best_dsc_epoch = epoch + 1
+                    best_metrics_epochs[0].append(best_dsc)
+                    best_metrics_epochs[1].append(best_dsc_epoch)
 
-                #     path_best_metric = path_output_dir / f"{model_name}_best_metric_epoch_{epoch + 1}.pkl"
-                #     path_best_metric_opt = path_best_metric.parent / f"{path_best_metric.stem}_opt{path_best_metric.suffix}"
-                #     torch.save(model.state_dict(), path_best_metric)
-                #     torch.save(optimizer.state_dict(), path_best_metric_opt)
+                    path_best_metric = path_output_dir / f"{model_name}_best_metric_epoch_{epoch + 1}.pkl"
+                    path_best_metric_opt = path_best_metric.parent / f"{path_best_metric.stem}_opt{path_best_metric.suffix}"
+                    torch.save(model.state_dict(), path_best_metric)
+                    torch.save(optimizer.state_dict(), path_best_metric_opt)
                     
-                #     logging.info(f"Saved new best metric model {path_best_metric}")
+                    logging.info(f"Saved new best metric model {path_best_metric}")
 
-                #     # Manage previous best metric models
-                #     if path_previous_best_metric is not None:
-                #         path_previous_best_metric.unlink()
-                #         path_previous_best_metric_opt.unlink()
+                    # Manage previous best metric models
+                    if path_previous_best_metric is not None:
+                        path_previous_best_metric.unlink()
+                        path_previous_best_metric_opt.unlink()
 
-                #     path_previous_best_metric = path_best_metric
-                #     path_previous_best_metric_opt = path_best_metric_opt
-                #     count_no_improvement = 0
-                # else:
-                #     count_no_improvement = count_no_improvement + 1
+                    path_previous_best_metric = path_best_metric
+                    path_previous_best_metric_opt = path_best_metric_opt
+                    count_no_improvement = 0
+                else:
+                    count_no_improvement = count_no_improvement + 1
 
-                # logging.info(
-                #     f"current epoch: {epoch + 1} current"
-                #     f" mean dice: {dsc:.4f}"
-                #     f" best mean dice: {best_dsc:.4f} "
-                #     f"at epoch: {best_dsc_epoch}"
-                # )
+                logging.info(
+                    f"current epoch: {epoch + 1} current"
+                    f" mean dice: {dsc:.4f}"
+                    f" best mean dice: {best_dsc:.4f} "
+                    f"at epoch: {best_dsc_epoch}"
+                )
 
-                # if count_no_improvement == no_improvement_threshold:
-                #     logging.info(f"No improvement after {count_no_improvement * val_interval} epochs. Stopping training.")
-                #     shutil.move(path_previous_best_metric, path_final_model)
-                #     break
+                if count_no_improvement == no_improvement_threshold:
+                    logging.info(f"No improvement after {count_no_improvement * val_interval} epochs. Stopping training.")
+                    shutil.move(path_previous_best_metric, path_final_model)
+                    break
 
     logging.info(f"Training completed, best_metric: {best_dsc:.4f} at epoch: {best_dsc_epoch}")
     return (max_epochs, epoch_loss_values, metric_values, best_metrics_epochs)
@@ -276,14 +278,15 @@ def test_model(ld_test: list[dict],
     post_trans = Compose(postprocessing_transforms)
 
     device = torch.device(DEVICE)
+    model.to(device)
+
     torch.load(path_checkpoint_model, model.state_dict(), weights_only=False)
 
-    model.to(device)
     model.eval()
     
     with torch.no_grad():
         for test_data in tqdm(test_loader):
-            test_inputs, test_labels = (test_data["image"].to(device), test_data["label"].to(device))
+            test_inputs, test_labels = (test_data["inputs"].to(device), test_data["label"].to(device))
                     
             if AMP:
                 with torch.autocast("cuda"):
@@ -297,7 +300,7 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.         
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
+def main(path_output_dir: Path = Path("C:/data/tf3_canals_from_jawbone/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
@@ -332,7 +335,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
     # Left Maxillary Sinus == 5, Right Maxillary Sinus == 6, Pharynx == 7
     # NB: Canals are 3, 4, 103, 104, 105; bridges and crowns are 8 and 9.
 
-    filter_labels = [1, 2, 5, 6, 7]
+    filter_labels = [3, 4, 103, 104, 105]
     rename_labels = [(x, i + 1) for i, x in enumerate(filter_labels)]
     n_labels = len(rename_labels) + 1
 
@@ -340,49 +343,52 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
         LoadImaged(keys=["image", "label"]),
         EnsureChannelFirstd(keys=["image", "label"]),
         Orientationd(keys=["image", "label"], axcodes="RAS"),
+        CopyItemsd(["label"], 1, ["lower_jaw"]),
+        LabelFilterd("lower_jaw", [1]),
+        CropForegroundd(["image", "label", "lower_jaw"], "lower_jaw"),
         LabelFilterd("label", filter_labels), 
         EditLabelsd("label", rename_labels),
-        # ScaleIntensityRanged("image", a_min=0, a_max=4000, b_min=0.0, b_max=1.0, clip=True),
-        ScaleIntensityRanged("image", a_min=-1000, a_max=2000, b_min=0.0, b_max=1.0, clip=True),
-        Spacingd(keys=["image", "label"], pixdim=(0.5, 0.5, 0.5), mode="nearest"),
-        SpatialPadd(["image", "label"], ROI_SIZE),
+        ScaleIntensityRanged("image", a_min=-1000, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
+        SpatialPadd(["image", "label", "lower_jaw"], ROI_SIZE),
     ]
 
     train_only_transforms = [
-        RandAffined(keys=["image", "label"], mode=("bilinear", "nearest"), prob=0.9, 
+        RandAffined(keys=["image", "label", "lower_jaw"], mode=("bilinear", "nearest", "nearest"), prob=0.9, 
                     rotate_range=(np.pi/15, np.pi/15, np.pi/15), scale_range=(0.1, 0.1, 0.1)),            
-        RandCropByPosNegLabeld(keys=["image", "label"], label_key="label", spatial_size=ROI_SIZE,
+        RandCropByPosNegLabeld(keys=["image", "label", "lower_jaw"], label_key="label", spatial_size=ROI_SIZE,
                                pos=1, neg=1, num_samples=4, allow_smaller=False),
         RandShiftIntensityd(keys=["image"], offsets=0.10, prob=0.90),
         RandGaussianNoised(keys=["image"], prob=0.2),
         RandGaussianSmoothd(keys=["image"], prob=0.2),
         RandGaussianSharpend(keys=["image"], prob=0.2),
+        ConcatItemsd(["image", "lower_jaw"], "inputs"),
+        DeleteItemsd(["image", "lower_jaw"])
     ]
 
-    test_val_only_transforms = []
+    test_val_only_transforms = [
+        ConcatItemsd(["image", "lower_jaw"], "inputs"),
+        DeleteItemsd(["image", "lower_jaw"])
+    ]
+
     train_transforms = initial_transforms + train_only_transforms
     test_val_transforms = initial_transforms + test_val_only_transforms
 
     # TODO: Convert to dict transforms; convert onehot to real labels again (potentially outside this transform - can use fuction from tf3_preprocess_images.py).
     postprocessing_transforms = [
         AsDiscrete(argmax=True),
-        Spacing(pixdim=(0.3, 0.3, 0.3), mode="nearest"),
         SaveImage(output_dir=path_output_dir / "test_segmentations")
     ]
     
     model = UNETR(
-        in_channels=1,
+        in_channels=2,
         out_channels=n_labels,
         img_size=ROI_SIZE,
-        feature_size=32,
-        # feature_size=16,   # Version from 16/08/25; 11:25
+        feature_size=16,
         hidden_size=768,
         mlp_dim=3072,
         num_heads=12,
-        proj_type="perceptron",
-        # proj_type="conv",   # Version from 16/08/25; 11:25
+        proj_type="conv",
         norm_name="instance",
-        # norm_name="batch",   # Version from 16/08/25; 11:25
         res_block=True,
         dropout_rate=0.0,
     )
@@ -397,19 +403,29 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
             d = {"image": path_images / f"{c}.nii.gz", 
                 "label": path_labels / f"{c}.nii.gz"}
             dm = {"image": path_images / f"{c}_mirrored.nii.gz", 
-                  "label": path_labels / f"{c}_mirrored.nii.gz"}
-            ld.append(d)
-            ld.append(dm)
+                "label": path_labels / f"{c}_mirrored.nii.gz"}
+            
+            im = nibabel.load(d["image"])
+            im_data = im.get_fdata()
 
-    n_workers = 4
-    batch_size = 6
+            if all([x in im_data for x in filter_labels]):
+                ld.append(d)
+                ld.append(dm)
 
-    train_model(ld_train[:10], ld_val[:10], path_output_dir, model, "all_non_tooth_anatomy", train_transforms, test_val_transforms, n_labels,
-                deterministic_training_seed=1, n_workers=4, batch_size=5, checkpoint_epoch=402, 
-                path_checkpoint_model=path_output_dir / "checkpoint_all_non_tooth_anatomy_test_epoch_402.pkl", max_epochs=403)
+    print(f"{len(ld_train)} train cases; {len(ld_test)} test cases; {len(ld_val)} val cases"
+           "found with all required labels.")
     
-    # test_model(ld_test[:2], path_output_dir / "all_non_tooth_anatomy_best_metric_epoch_400.pkl", model, test_val_transforms, postprocessing_transforms, 
-    #            n_labels, n_workers=1, batch_size=1)
+    n_workers = 4
+    batch_size = 4
+
+    # inc_coords is actually smaller features, higher foreground ratio (3:1), conv projection type.
+
+    train_model(ld_train, ld_val, path_output_dir, model, "canals_from_jawbone_inc_coords", train_transforms, test_val_transforms, n_labels,
+                deterministic_training_seed=None, n_workers=n_workers, batch_size=batch_size, 
+                path_checkpoint_model= path_output_dir / "checkpoint_canals_from_jawbone_inc_coords_epoch_18.pkl", checkpoint_epoch=18)
+    
+    test_model(ld_test, path_output_dir / "canals_from_jawbone_inc_coords_best_metric_epoch_100.pkl", model, test_val_transforms, postprocessing_transforms, 
+               n_labels, n_workers=n_workers, batch_size=1)
 
     
 if __name__ == "__main__":
