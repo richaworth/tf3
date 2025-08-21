@@ -78,10 +78,10 @@ def train_model(ld_train: list[dict],
     device = torch.device(DEVICE)
     model.to(device)
 
-    max_epochs = 200
-    val_interval = 20
+    max_epochs = 50
+    val_interval = 2
     checkpoint_interval = 10 # Save a checkpoint of the training in case restarting is required (temporary).
-    major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
+    major_checkpoint_interval = 10 # Save a permanent copy of the current training at major intervals.
     no_improvement_threshold = 5 # If no improvement in the metric within N validation cycles, stop training.
     
     loss_function = DiceCELoss(to_onehot_y=True, softmax=True, include_background=False)
@@ -100,7 +100,7 @@ def train_model(ld_train: list[dict],
         path_opt_ckpt_previous = None
 
     lr_epoch = -1 if checkpoint_epoch is None else checkpoint_epoch -1
-    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95, last_epoch=lr_epoch)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=1e-7, last_epoch=lr_epoch)
 
     scaler = torch.GradScaler("cuda") if AMP else None
 
@@ -274,7 +274,7 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.         
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output/")):
+def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output_last_minute_panic/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
@@ -309,7 +309,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output/")):
         Orientationd(keys=["image", "localiser", "label"], axcodes="RAS"),
         ResampleToMatchd(["localiser", "label"], "image", mode=("bilinear", "nearest"), padding_mode="zeros"),
         ScaleIntensityRanged("image", a_min=0, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
-        ScaleIntensityRanged("localiser", a_min=-50, a_max=0, b_min=0.0, b_max=1.0, clip=True),
+        ScaleIntensityRanged("localiser", a_min=-20, a_max=0, b_min=0.0, b_max=1.0, clip=True),
         SpatialPadd(keys=["image", "localiser", "label"], spatial_size=ROI_SIZE),
         # SaveImaged(keys=["image"], output_postfix="init_image"),  # Comment out unless testing.
         # SaveImaged(keys=["localiser"], output_postfix="init_local"),  # Comment out unless testing.
@@ -387,14 +387,13 @@ def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output/")):
 
                 ld.append(d)
     
-    model_name = "per_tooth_unetr_diceceloss"
+    model_name = "per_tooth_unet"
 
     train_model(ld_train, ld_val, path_output_dir, model, model_name, train_transforms, test_val_transforms, n_labels,
                 deterministic_training_seed=deterministic_seed, n_workers=4, batch_size=25)
     
-    test_model(ld_test, path_output_dir / "per_tooth_unetr_diceceloss_best_metric_epoch_200.pkl", model, 
-               test_val_transforms, postprocessing_transforms, 
-               n_labels, n_workers=4, batch_size=8)
+    test_model(ld_test, path_output_dir / "per_tooth_unet_epoch_50.pkl", model, 
+               test_val_transforms, postprocessing_transforms, n_labels, n_workers=1, batch_size=1)
 
 
 if __name__ == "__main__":
