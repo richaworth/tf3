@@ -48,7 +48,7 @@ from tqdm import tqdm
 
 import torch
 
-ROI_SIZE = (80, 80, 80)
+ROI_SIZE = (64, 64, 64)
 AMP = True
 DEVICE = "cuda:0"
 
@@ -103,10 +103,10 @@ def train_model(ld_train: list[dict],
     device = torch.device(DEVICE)
     model.to(device)
 
-    max_epochs = 400
+    max_epochs = 100
     val_interval = 5
     checkpoint_interval = 2 # Save a checkpoint of the training in case restarting is required (temporary).
-    major_checkpoint_interval = 100 # Save a permanent copy of the current training at major intervals.
+    major_checkpoint_interval = 50 # Save a permanent copy of the current training at major intervals.
     no_improvement_threshold = 5 # If no improvement in the metric within N validation cycles, stop training.
         
     loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
@@ -156,7 +156,7 @@ def train_model(ld_train: list[dict],
 
         for batch_data in tqdm(train_loader):
             step += 1
-            inputs, labels = (batch_data["image"].to(device), batch_data["label"].to(device))
+            inputs, labels = (batch_data["inputs"].to(device), batch_data["label"].to(device))
             optimizer.zero_grad()
 
             if AMP:
@@ -206,7 +206,7 @@ def train_model(ld_train: list[dict],
 
             with torch.no_grad():
                 for val_data in tqdm(val_loader):
-                    val_inputs, val_labels = (val_data["image"].to(device), val_data["label"].to(device))
+                    val_inputs, val_labels = (val_data["inputs"].to(device), val_data["label"].to(device))
                     
                     if AMP:
                         with torch.autocast("cuda"):
@@ -286,7 +286,7 @@ def test_model(ld_test: list[dict],
     
     with torch.no_grad():
         for test_data in tqdm(test_loader):
-            test_inputs, test_labels = (test_data["image"].to(device), test_data["label"].to(device))
+            test_inputs, test_labels = (test_data["inputs"].to(device), test_data["label"].to(device))
                     
             if AMP:
                 with torch.autocast("cuda"):
@@ -300,7 +300,7 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())  # TODO - get case id/image name and print with this. Save to CSV.         
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
+def main(path_output_dir: Path = Path("C:/data/tf3_canals_from_jawbone/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
@@ -335,7 +335,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
     # Left Maxillary Sinus == 5, Right Maxillary Sinus == 6, Pharynx == 7
     # NB: Canals are 3, 4, 103, 104, 105; bridges and crowns are 8 and 9.
 
-    filter_labels = [8, 9, 10]
+    filter_labels = [3, 4, 103, 104, 105]
     rename_labels = [(x, i + 1) for i, x in enumerate(filter_labels)]
     n_labels = len(rename_labels) + 1
 
@@ -349,24 +349,27 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
         LabelFilterd("label", filter_labels), 
         EditLabelsd("label", rename_labels),
         ScaleIntensityRanged("image", a_min=-1000, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
-        SpatialPadd(["image", "label"], ROI_SIZE),
-        ConcatItemsd(["image", "lower_jaw"], "inputs"),
-        AddCoordinateChannelsd("inputs", (0, 1, 2)),
-        DeleteItemsd(["image", "lower_jaw"])
+        SpatialPadd(["image", "label", "lower_jaw"], ROI_SIZE),
     ]
 
     train_only_transforms = [
-        RandAffined(keys=["image", "label"], mode=("bilinear", "nearest"), prob=0.9, 
+        RandAffined(keys=["image", "label", "lower_jaw"], mode=("bilinear", "nearest", "nearest"), prob=0.9, 
                     rotate_range=(np.pi/15, np.pi/15, np.pi/15), scale_range=(0.1, 0.1, 0.1)),            
-        RandCropByPosNegLabeld(keys=["image", "label"], label_key="label", spatial_size=ROI_SIZE,
+        RandCropByPosNegLabeld(keys=["image", "label", "lower_jaw"], label_key="label", spatial_size=ROI_SIZE,
                                pos=1, neg=1, num_samples=4, allow_smaller=False),
         RandShiftIntensityd(keys=["image"], offsets=0.10, prob=0.90),
         RandGaussianNoised(keys=["image"], prob=0.2),
         RandGaussianSmoothd(keys=["image"], prob=0.2),
         RandGaussianSharpend(keys=["image"], prob=0.2),
+        ConcatItemsd(["image", "lower_jaw"], "inputs"),
+        DeleteItemsd(["image", "lower_jaw"])
     ]
 
-    test_val_only_transforms = []
+    test_val_only_transforms = [
+        ConcatItemsd(["image", "lower_jaw"], "inputs"),
+        DeleteItemsd(["image", "lower_jaw"])
+    ]
+
     train_transforms = initial_transforms + train_only_transforms
     test_val_transforms = initial_transforms + test_val_only_transforms
 
@@ -377,14 +380,14 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
     ]
     
     model = UNETR(
-        in_channels=1,
+        in_channels=2,
         out_channels=n_labels,
         img_size=ROI_SIZE,
-        feature_size=32,
+        feature_size=16,
         hidden_size=768,
         mlp_dim=3072,
         num_heads=12,
-        proj_type="perceptron",
+        proj_type="conv",
         norm_name="instance",
         res_block=True,
         dropout_rate=0.0,
@@ -411,13 +414,17 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
 
     print(f"{len(ld_train)} train cases; {len(ld_test)} test cases; {len(ld_val)} val cases"
            "found with all required labels.")
+    
     n_workers = 4
     batch_size = 4
 
-    train_model(ld_train, ld_val, path_output_dir, model, "bridges_crowns_implants", train_transforms, test_val_transforms, n_labels,
-                deterministic_training_seed=None, n_workers=n_workers, batch_size=batch_size)
+    # inc_coords is actually smaller features, higher foreground ratio (3:1), conv projection type.
+
+    train_model(ld_train, ld_val, path_output_dir, model, "canals_from_jawbone_inc_coords", train_transforms, test_val_transforms, n_labels,
+                deterministic_training_seed=None, n_workers=n_workers, batch_size=batch_size, 
+                path_checkpoint_model= path_output_dir / "checkpoint_canals_from_jawbone_inc_coords_epoch_18.pkl", checkpoint_epoch=18)
     
-    test_model(ld_test, path_output_dir / "bridges_crowns_implants_best_metric_epoch_200.pkl", model, test_val_transforms, postprocessing_transforms, 
+    test_model(ld_test, path_output_dir / "canals_from_jawbone_inc_coords_best_metric_epoch_100.pkl", model, test_val_transforms, postprocessing_transforms, 
                n_labels, n_workers=n_workers, batch_size=1)
 
     

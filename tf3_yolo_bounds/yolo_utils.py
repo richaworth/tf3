@@ -110,7 +110,7 @@ def yolo_bounds_from_image(image: Path | np.ndarray,
         label = r.names[c]
         conf = box.conf.item()
 
-        # Detach box and ensure in X0,Y0,X1,Y1 format
+        # Detach box and output in X0,Y0,X1,Y1 format
         box = box.xyxy.detach().cpu().numpy()[0]
 
         if label in output.keys() and combine_multiple:
@@ -135,9 +135,9 @@ def yolo_bounds_from_image(image: Path | np.ndarray,
             output[label] = {"box": box, "conf": conf}
 
     return output
-    
-def calculate_2d_bounds_as_xywh(label_array: np.ndarray, 
-                                labels: int | list[int], 
+
+def calculate_2d_bounds_as_xywh(label_array: np.ndarray,
+                                labels: int | list[int],
                                 axes: int | list[int] = 0) -> tuple[float, float, float, float] | list[tuple[float, float, float, float]] | None:
     """
     Calculate the 2D bounds of one or more given labels (combined) within a 3D mask, in YOLO-compatible
@@ -152,15 +152,15 @@ def calculate_2d_bounds_as_xywh(label_array: np.ndarray,
     Returns:
         tuple[float, float, float, float] | list[tuple[float, float, float, float]] | None: Bounds of all labels along given axis/axes. Returns None if label not available.
     """
-    if isinstance(labels, int): 
+    if isinstance(labels, int):
         labels = [labels]
-    if isinstance(axes, int): 
+    if isinstance(axes, int):
         axes = [axes]
 
     output = []
-    
+
     mask = np.zeros_like(label_array)
-        
+
     for lab in labels:
         mask = np.where(label_array == lab, 1, mask)
 
@@ -171,19 +171,19 @@ def calculate_2d_bounds_as_xywh(label_array: np.ndarray,
         # If there's nothing in the final mask, return all None
         if not np.any(mask_2d):
             return None
-        
+
         arr = np.where(mask_2d != 0)
-        i0, i1, j0, j1 = np.min(arr[0]), np.max(arr[0]), np.min(arr[1]), np.max(arr[1]) 
-        fi0, fi1, fj0, fj1 = i0 / mask_2d.shape[1], i1 / mask_2d.shape[1], j0 / mask_2d.shape[0], j1 / mask_2d.shape[0]  
-        
+        i0, i1, j0, j1 = np.min(arr[0]), np.max(arr[0]), np.min(arr[1]), np.max(arr[1])
+        fi0, fi1, fj0, fj1 = i0 / mask_2d.shape[1], i1 / mask_2d.shape[1], j0 / mask_2d.shape[0], j1 / mask_2d.shape[0]
+
         # Ends up that i, j == Y, X axes once saved in png. As such:
         x = (fj0 + fj1) /2
         y = (fi0 + fi1) /2
         w = fj1 - fj0
         h = fi1 - fi0
-        
+
         output.append((x, y, w, h))
-    
+
     if len(output) == 1:
         return output[0]
     else:

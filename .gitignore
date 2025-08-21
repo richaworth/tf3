@@ -1,7 +1,9 @@
-# Exclude __pycache__ and .vscode
+# Exclude system files
 .vscode/*
 __pycache__/*
 */__pycache__/*
+desktop.ini
+
 
 # Exclude YOLO stuff
 runs/*
