@@ -110,7 +110,7 @@ def yolo_bounds_from_image(image: Path | np.ndarray,
         label = r.names[c]
         conf = box.conf.item()
 
-        # Detach box and ensure in X0,Y0,X1,Y1 format
+        # Detach box and output in X0,Y0,X1,Y1 format
         box = box.xyxy.detach().cpu().numpy()[0]
 
         if label in output.keys() and combine_multiple:

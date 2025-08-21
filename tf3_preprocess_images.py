@@ -229,6 +229,9 @@ def per_tooth_image_mask_sd(path_input_image: Path,
 
                 mask_tooth = np.where(im_label_data == lab, 1, 0)
                 mask_tooth = np.where(im_label_data == lab+100, 2, mask_tooth)
+                # all_targets = np.where(im_label_data >= 11, 3, 0)
+                # final_mask = np.where(mask_tooth > 0, mask_tooth, all_targets)
+                
                 nii_mask_tooth = nibabel.Nifti1Image(mask_tooth, im_label.affine, im_label.header, dtype=im_label.header.get_data_dtype())
 
                 nii_mask_tooth_cropped = nii_mask_tooth.slicer[i0:i1, j0:j1, k0:k1]
