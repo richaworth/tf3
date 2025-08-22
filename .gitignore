@@ -9,3 +9,9 @@ desktop.ini
 runs/*
 yolo11l.pt
 yolo11n.pt
+
+*pt
+*.pkl
+*.nii.gz
+
+tf3_evaluation/algorithm/test

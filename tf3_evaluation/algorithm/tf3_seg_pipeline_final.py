@@ -37,8 +37,6 @@ from tqdm import tqdm
 
 import yaml
 
-from tf3_yolo_bounds.yolo_utils import yolo_bounds_from_image, calculate_mip
-
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 YOLO_TEETH_LOOKUP = {
@@ -133,6 +131,8 @@ TOOTH_TO_NEIGHBOUR_LOOKUP = {
 
 PULP_LABEL = 50
 
+# Moved in helper functions to give flat structure for docker. Similarly moved models to algo directory.
+
 def torch_dilate_conv3d(tensor_in: torch.Tensor, iterations: int = 1) -> torch.Tensor:
     """
     Perform binary dilation of a 3D torch tensor (using torch.nn.functional.conv3d).
@@ -206,6 +206,140 @@ def torch_erode_conv3d(tensor_in: torch.Tensor, iterations: int = 1) -> torch.Te
         torch_result = torch.where(conv_result == 7, 1, 0).to(torch.float32)
     
     return torch_result.squeeze(0).type_as(tensor_in) if squeeze_result else torch_result.type_as(tensor_in)
+
+def calculate_mip(np_img: np.ndarray, axes: int | list[int] = 0) -> np.ndarray | list[np.ndarray]:
+    """
+    Calculate MIP from original image along given axis, between slices (if provided).
+
+    Args:
+        np_img (np.ndarray): Numpy array of image (3d)
+        axes (int, optional): Axis/axes along which to calculate MIP. Defaults to 0.
+
+    Returns:
+        Maximum intensity projection along the axis/axes.
+    """
+    if isinstance(axes, int):
+        axes = [axes]
+
+    mips = []
+
+    for a in axes:
+        mips.append(np.max(np_img, axis = a))
+
+    if len(mips) == 1:
+        return mips[0]
+    else:
+        return mips
+
+
+def calculate_2d_bounds_as_fraction(label_array: np.ndarray, 
+                                    labels: int | list[int], 
+                                    axes: int | list[int] = 0) -> tuple[float, float, float, float] | list[tuple[float, float, float, float]] | None:
+    """
+    Calculate the 2D bounds of one or more given labels (combined) within a 3D mask, as a fraction of the equivalent axis' MIP image.
+
+    Args:
+        np_img (np.ndarray): Numpy array of mask (3d)
+        labels (int | list[int]): Label or labels from which to calculate bounds. Will combine these
+        axes (int | list[int], optional): Axis or axes along which to calculate bounds. Defaults to 0.
+
+    Returns:
+        tuple[float, float, float, float] | list[tuple[float, float, float, float]] | None: Bounds of all labels along given axis/axes. Returns None if label not available.
+    """
+    if isinstance(labels, int): 
+        labels = [labels]
+    if isinstance(axes, int): 
+        axes = [axes]
+
+    output = []
+    
+    mask = np.zeros_like(label_array)
+        
+    for lab in labels:
+        mask = np.where(label_array == lab, 1, mask)
+
+    for a in axes:
+        mask_2d = np.max(mask, axis = a)
+
+        # If there's nothing in the final mask, return all None
+        if not np.any(mask_2d):
+            return None
+        
+        arr = np.where(mask_2d != 0)
+        i0, i1, j0, j1 = np.min(arr[0]), np.max(arr[0]), np.min(arr[1]), np.max(arr[1]) 
+        fi0, fi1, fj0, fj1 = i0 / mask_2d.shape[1], i1 / mask_2d.shape[1], j0 / mask_2d.shape[0], j1 / mask_2d.shape[0]  
+        
+        # Ends up being in Ymin, Ymax, Xmin, Xmax order; fix here.
+        output.append((fj0, fj1, fi0, fi1))
+    
+    if len(output) == 1:
+        return output[0]
+    else:
+        return output
+
+
+def yolo_bounds_from_image(image: Path | np.ndarray,
+                           yolo_model,
+                           png_output_dir: Path | None = None,
+                           combine_multiple: bool = True,
+                           min_conf: float = 0.66) -> dict:
+    """
+    Run yolo.predict on an image, output review png and return a dict of boxes and confidences per label.
+    If a label is repeated in the yolo output, either combine these or return a list.
+
+    Args:
+        image: Path to input png image.
+        yolo_model: YOLO model to use for prediction.
+        png_output_dir: Path to output png image directory.
+        combine_multiple: If True - Combine all boxes with the same label, return the lowest confidence.
+            If False - Return all boxes as a list. Default is True.
+        min_conf: Minimum confidence threshold. Default is 0.66.
+
+    Returns:
+        Dict of box/boxes per label and their confidence values ({"box": box/boxes in xyxy format (measured in pixels);
+            "conf": confidence value for that box/those boxes}).
+    """
+    result = yolo_model(source=image, conf=min_conf, verbose=False)
+    output = {}
+
+    # Only passing one image at a time
+    r = result[0]
+
+    if png_output_dir is not None and isinstance(image, Path):
+        png_output_dir.mkdir(exist_ok=True, parents=True)
+        r.save(filename=png_output_dir / f"{image.stem}_out.png")
+
+    for box in r.boxes:
+        c = int(box.cls.item())
+        label = r.names[c]
+        conf = box.conf.item()
+
+        # Detach box and output in X0,Y0,X1,Y1 format
+        box = box.xyxy.detach().cpu().numpy()[0]
+
+        if label in output.keys() and combine_multiple:
+            if conf > output[label]["conf"]:
+                conf = output[label]["conf"]
+
+            bb_x0 = np.min((output[label]["box"][0], box[0]))
+            bb_y0 = np.min((output[label]["box"][1], box[1]))
+            bb_x1 = np.max((output[label]["box"][2], box[2]))
+            bb_y1 = np.max((output[label]["box"][3], box[3]))
+            bb = np.asarray([bb_x0, bb_y0, bb_x1, bb_y1])
+
+            output[label] = {"box": bb, "conf": conf}
+        elif label in output.keys() and not combine_multiple:
+            if not isinstance(output[label]["box"], list):
+                output[label]["box"] = [output[label]["box"], box]
+                output[label]["conf"] = [output[label]["conf"], conf]
+            else:
+                output[label]["box"].append(box)
+                output[label]["conf"].append(conf)
+        else:
+            output[label] = {"box": box, "conf": conf}
+
+    return output
+
 
 def review_pngs(array: np.ndarray, axes: list[int], path_outdir: Path, filestem: str):
     path_outdir.mkdir(exist_ok=True, parents=True)
@@ -584,44 +718,58 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         z0 = max(tooth_centre[2] - 40, 0)
         z1 = min(tooth_centre[2] + 40, im_array_in.shape[2])
 
-        # Teeth should only contain dentin and fillings at the top. As such, if the ROI doesn't have +2000HU near the top, it could be improved.
-        # Only working on the central section of the bounds for both simplicity and specificity.
-        # If none found, default to previous z0-z1.
+        # # Teeth should only contain dentin and fillings at the top. As such, if the ROI doesn't have +2000HU near the top, it could be improved.
+        # # Only working on the central section of the bounds for both simplicity and specificity.
+        # # If none found, default to previous z0-z1.
 
-        if z1_in - z0_in > 100 and row == "lower":
-            test_array = im_array_in[x0 + int((x1-x0)*0.25):x1 - int((x1-x0)*0.25), y0 + int((y1-y0)*0.25):y1 - int((y1-y0)*0.25), z0_in:z1_in]
-            test_array = np.where(test_array > 2000, 1, 0)
-            step = 20
+        # # Note - image in current frame is upside down as far as Z goes - lower Z slices are closer to the roof of the mouth.
+        # # As such, z1_upper is the "bottom" of the upper bounds. 
+
+        # if z1_in - z0_in > 100 and row == "lower":
+        #     test_array = im_array_in[x0 + int((x1-x0)*0.25):x1 - int((x1-x0)*0.25), y0 + int((y1-y0)*0.25):y1 - int((y1-y0)*0.25), z0_in:z1_in]
+        #     test_array = np.where(test_array > 2000, 1, 0)
+        #     step = 10
             
-            best_bright_end = 0
-            best_z0 = int((z1_in - z0_in) / 2)
+        #     best_bright_end = 0
+        #     best_z0 = int((z1_in - z0_in) / 2)
 
-            for window_z0 in range(0, test_array.shape[2] - 80, step):
-                n_bright_end = np.sum(test_array[window_z0 + 40, window_z0 + 80])
-                if n_bright_end > best_bright_end:
-                    best_bright_end = n_bright_end
-                    best_z0 = window_z0
+        #     for window_z0 in range(0, test_array.shape[2] - 80, step):
+        #         # If the centre of this window is inside the upper bounds, skip this window.
+        #         if z0_upper is not None:
+        #             if z0 + window_z0 + 40 < z1_upper:
+        #                 continue
 
-            z0 = z0_in + best_z0
-            z1 = z0_in + best_z0 + 80
+        #         n_bright_end = np.sum(test_array[:, :, window_z0 + 40:window_z0 + 80])
+
+        #         if n_bright_end > best_bright_end:
+        #             best_bright_end = n_bright_end
+        #             best_z0 = window_z0
+
+        #     z0 = z0_in + best_z0
+        #     z1 = z0_in + best_z0 + 80
         
-        # Inverse (bright at bottom) for upper teeth.
-        if z1_in - z0_in > 100 and row == "upper":
-            test_array = im_array_in[x0 + int((x1-x0)*0.25):x1 - int((x1-x0)*0.25), y0 + int((y1-y0)*0.25):y1 - int((y1-y0)*0.25), z0_in:z1_in]
-            test_array = np.where(test_array > 2000, 1, 0)
-            step = 20
+        # # Inverse (bright at bottom) for upper teeth.
+        # if z1_in - z0_in > 100 and row == "upper":
+        #     test_array = im_array_in[x0 + int((x1-x0)*0.25):x1 - int((x1-x0)*0.25), y0 + int((y1-y0)*0.25):y1 - int((y1-y0)*0.25), z0_in:z1_in]
+        #     test_array = np.where(test_array > 2000, 1, 0)
+        #     step = 20
             
-            best_bright_end = 0
-            best_z0 = int((z1_in - z0_in) / 2)
+        #     best_bright_end = 0
+        #     best_z0 = int((z1_in - z0_in) / 2)
 
-            for window_z0 in range(0, test_array.shape[2] - 80, step):
-                n_bright_end = np.sum(test_array[window_z0, window_z0 + 40])
-                if n_bright_end > best_bright_end:
-                    best_bright_end = n_bright_end
-                    best_z0 = window_z0
+        #     for window_z0 in range(0, test_array.shape[2] - 80, step):
+        #         # If the centre of this window is inside the upper bounds, skip this window.
+        #         if z0_lower is not None:
+        #             if z0 + window_z0 + 40 > z0_lower:
+        #                 continue
 
-            z0 = z0_in + best_z0
-            z1 = z0_in + best_z0 + 80
+        #         n_bright_end = np.sum(test_array[window_z0, window_z0 + 40])
+        #         if n_bright_end > best_bright_end:
+        #             best_bright_end = n_bright_end
+        #             best_z0 = window_z0
+
+        #     z0 = z0_in + best_z0
+        #     z1 = z0_in + best_z0 + 80
 
         # Pad tooth patch if at the edge.
         pad_x0 = 0 if x0 > 0 else -1 * (tooth_centre[0] - 40)
@@ -646,8 +794,9 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         itk_tooth_sd = sitk.GetImageFromArray(tooth_sd)
         itk_smdm_out = sitk.SignedMaurerDistanceMap(itk_tooth_sd, insideIsPositive=True, squaredDistance=False, useImageSpacing=True)
 
-        # Clip image to 0-3000; SD to -50-0. Set these to 0-1. # TODO: Checking -20/new model.
+        # Clip image to 0-3000; SD to -50-0. Set these to 0-1.
         tooth_image_pad = ((np.clip(tooth_image_pad, a_min=0, a_max=3000)) / 3000)
+        # tooth_sd = ((np.clip(sitk.GetArrayViewFromImage(itk_smdm_out), a_min=-50, a_max=0)) / 20 ) + 1
         tooth_sd = ((np.clip(sitk.GetArrayViewFromImage(itk_smdm_out), a_min=-20, a_max=0)) / 20 ) + 1
 
         # Concatenate Image and SD along axis 0
@@ -760,34 +909,34 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
     return label_tensor_out
 
 
-def main():
-    path_case_ids_yaml = Path("C:/data/tf3/case_id_lists.yaml")
-    path_data_dir = Path("C:/data/tf3/images_rolm")
-    path_output_data = Path("C:/data/tf3/test_pipeline_out")
+# def main():
+#     path_case_ids_yaml = Path("C:/data/tf3/case_id_lists.yaml")
+#     path_data_dir = Path("C:/data/tf3/images_rolm")
+#     path_output_data = Path("C:/data/tf3/test_pipeline_out")
 
-    with path_case_ids_yaml.open("r") as f:
-        d_case_ids = dict(yaml.safe_load(f))
+#     with path_case_ids_yaml.open("r") as f:
+#         d_case_ids = dict(yaml.safe_load(f))
 
-    test_cases = d_case_ids["test"]
-    list_images = ([path_data_dir / f"{x}.nii.gz" for x in test_cases])
+#     test_cases = d_case_ids["test"]
+#     list_images = ([path_data_dir / f"{x}.nii.gz" for x in test_cases])
 
-    model_paths = {
-        "yolo_axis_lr": Path("C:/data/tf3/yolo_models/yolo_localiser_640_axis_0.pt"),
-        "yolo_axis_ap": Path("C:/data/tf3/yolo_models/yolo_localiser_640_axis_1.pt"),
-        "yolo_lower_teeth": Path("C:/data/tf3/yolo_models/yolo_tooth_finder_lower_jaw.pt"),
-        "yolo_upper_teeth": Path("C:/data/tf3/yolo_models/yolo_tooth_finder_upper_jaw.pt"),
-        "seg_tooth": Path("C:/data/tf3/seg_models/per_tooth_unet_best_metric_epoch_50.pkl"),  # TODO - test if this improves results; retrain additional overnight.
-        "seg_large_anatomy": Path("C:/data/tf3/seg_models/non_tooth_anatomy_80_80_80.pkl"),
-        "seg_canals": Path("C:/data/tf3/seg_models/canals_from_jawbone_64_64_64.pkl"),
-        "seg_bridges_crowns": Path("C:/data/tf3/seg_models/bridges_crowns_implants_96_96_96.pkl")
-    }
+#     model_paths = {
+#         "yolo_axis_lr": Path("tf3_evaluation/algorithm/yolo_localiser_640_axis_0.pt"),
+#         "yolo_axis_ap": Path("tf3_evaluation/algorithm/yolo_localiser_640_axis_1.pt"),
+#         "yolo_lower_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_lower_jaw.pt"),
+#         "yolo_upper_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_upper_jaw.pt"),
+#         # "seg_tooth": Path("tf3_evaluation/algorithm/per_tooth_unet_best_metric_epoch_50.pkl"),
+#         "seg_tooth": Path("tf3_evaluation/algorithm/per_tooth_unet_80_80_80.pkl"),
+#         "seg_large_anatomy": Path("tf3_evaluation/algorithm/non_tooth_anatomy_80_80_80.pkl"),
+#         "seg_canals": Path("tf3_evaluation/algorithm/canals_from_jawbone_64_64_64.pkl"),
+#     }
 
-    for path_image in list_images:
-        if not (path_output_data / f"{path_image.name.split(".")[0]}_all_labels.nii.gz").exists():
-            segment_one_image(path_image, path_output_data, model_paths, run_in_debug_mode=True)
+#     for path_image in list_images[:2]:
+#         if not (path_output_data / f"{path_image.name.split(".")[0]}_all_labels.nii.gz").exists():
+#             segment_one_image(path_image, path_output_data, model_paths, run_in_debug_mode=False)
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
 
 
