@@ -776,7 +776,6 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
 
         # Clip image to 0-3000; SD to -50-0. Set these to 0-1.
         tooth_image_pad = ((np.clip(tooth_image_pad, a_min=0, a_max=3000)) / 3000)
-        # tooth_sd = ((np.clip(sitk.GetArrayViewFromImage(itk_smdm_out), a_min=-50, a_max=0)) / 20 ) + 1
         tooth_sd = ((np.clip(sitk.GetArrayViewFromImage(itk_smdm_out), a_min=-50, a_max=0)) / 50 ) + 1
 
         # Concatenate Image and SD along axis 0
@@ -788,7 +787,6 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
 
         if run_in_debug_mode:
             review_pngs(tensor_tooth_im.numpy()[0], [0, 1, 2], path_interim_data / "png", f"{case_id}_{row}_{tooth_name}_im_tensor")
-            # review_pngs(tensor_tooth_sd.numpy()[0], [0, 1, 2], path_interim_data / "png", f"{case_id}_{row}_{tooth_name}_sd_tensor")
 
         tensor_inputs = tensor_inputs.to(DEVICE)
 

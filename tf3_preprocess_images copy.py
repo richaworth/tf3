@@ -14,8 +14,8 @@ from tqdm import tqdm
 
 import SimpleITK as sitk
 
-SD_LARGE = np.empty(shape=(200, 200, 200), dtype=float)
-SD_LARGE[100, 100, 100] = 1
+SD_LARGE = np.empty(shape=(300, 300, 300), dtype=float)
+SD_LARGE[150, 150, 150] = 1
 SD_LARGE = binary_dilation(SD_LARGE, iterations=3)
 
 itk_image = sitk.GetImageFromArray(np.astype(SD_LARGE, int))
@@ -271,7 +271,7 @@ def per_tooth_image_mask_sd(path_input_image: Path,
                 nibabel.save(nii_mask_tooth_cropped, path_tooth_labels_out)
 
                 # SD image is 200 x 200 x 200
-                sd_centre = (100, 100, 100)
+                sd_centre = (150, 150, 150)
                 sd_x0 = sd_centre[0] - int((i1 - i0) / 2)
                 sd_x1 = sd_x0 + (i1 - i0)
                 sd_y0 = sd_centre[1] - int((j1 - j0) / 2)

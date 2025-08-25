@@ -836,8 +836,6 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         tooth_label_out = torch.where(tooth_model_result_argmax_out == 1, label_value, 0)
         pulp_label_out = torch.where(tooth_model_result_argmax_out == 2, PULP_LABEL, 0)
 
-        
-
         # if DEBUG:
             # review_pngs(tooth_model_result_argmax_out, [0, 1, 2], path_interim_data / "png", f"{case_id}_{tooth_name}_{row}_argmax")
 
@@ -854,8 +852,6 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
             "pulp_label": pulp_label_out.squeeze().detach().type(torch.int8)
         }
 
-    # TODO: Make parallel.
-    # TODO: Lock file for tooth model?
     tooth_results = {}
 
     for row in ["upper", "lower"]:
@@ -865,32 +861,32 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
             if result is not None:
                 tooth_results[result["target_label"]] = result
     
-    # for d in tooth_results.values():
-    #     label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
+    for d in tooth_results.values():
+        label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
 
-    # Manage overlapping tooth labels
-    for k, d in tooth_results.items():
-        # If no neighbours, no changes.
-        if k not in TOOTH_TO_NEIGHBOUR_LOOKUP.keys() or TOOTH_TO_NEIGHBOUR_LOOKUP[k] not in tooth_results.keys():
-            label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
-        else:
-            di = tooth_results[TOOTH_TO_NEIGHBOUR_LOOKUP[k]]
-            overlap_mask = torch.logical_and(d["tooth_label"], di["tooth_label"])
+    # # Manage overlapping tooth  - rendered less useful after changes to tooth model.
+    # for k, d in tooth_results.items():
+    #     # If no neighbours, no changes.
+    #     if k not in TOOTH_TO_NEIGHBOUR_LOOKUP.keys() or TOOTH_TO_NEIGHBOUR_LOOKUP[k] not in tooth_results.keys():
+    #         label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
+    #     else:
+    #         di = tooth_results[TOOTH_TO_NEIGHBOUR_LOOKUP[k]]
+    #         overlap_mask = torch.logical_and(d["tooth_label"], di["tooth_label"])
 
-            # If no overlap, no changes.
-            if torch.max(overlap_mask) == 0:
-                label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
-            else:
-                d_conf_overlap = d["tooth_model_conf"] * overlap_mask
-                di_conf_overlap = di["tooth_model_conf"] * overlap_mask
+    #         # If no overlap, no changes.
+    #         if torch.max(overlap_mask) == 0:
+    #             label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
+    #         else:
+    #             d_conf_overlap = d["tooth_model_conf"] * overlap_mask
+    #             di_conf_overlap = di["tooth_model_conf"] * overlap_mask
 
-                # If the confidence for the "other tooth" is higher for a given voxel, set that voxel to zero 
-                # for this tooth. Otherwise, keep the voxel.
-                d["tooth_label"] = torch.where(di_conf_overlap > d_conf_overlap, 0, d["tooth_label"])
-                di["tooth_label"] = torch.where(d_conf_overlap > di_conf_overlap, 0, di["tooth_label"])
+    #             # If the confidence for the "other tooth" is higher for a given voxel, set that voxel to zero 
+    #             # for this tooth. Otherwise, keep the voxel.
+    #             d["tooth_label"] = torch.where(di_conf_overlap > d_conf_overlap, 0, d["tooth_label"])
+    #             di["tooth_label"] = torch.where(d_conf_overlap > di_conf_overlap, 0, di["tooth_label"])
 
-                # Then, add this tooth (and pulp) to the output tensor.
-                label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
+    #             # Then, add this tooth (and pulp) to the output tensor.
+    #             label_tensor_out = label_tensor_out + d["tooth_label"] + d["pulp_label"]
 
     if run_in_debug_mode:
         label_array_out = label_tensor_out.cpu().squeeze().numpy()

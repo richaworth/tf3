@@ -203,7 +203,6 @@ def per_tooth_image_mask_sd(path_input_image: Path,
     im_label_data = im_label.get_fdata()
     im_ct = nibabel.load(path_input_image)
 
-
     # Teeth are labelled 11-47, and related pulp == (tooth + 100)
     # For each - get centre of tooth, dilate to a small circle of ~1mm diameter (2 iterations), calculate distance from each voxel to this circle.
     # Additionally create a review image of all tooth centres.

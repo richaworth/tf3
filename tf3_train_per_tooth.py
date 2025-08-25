@@ -307,27 +307,23 @@ def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output_last_minute_
         EnsureChannelFirstd(keys=["image", "localiser", "label"]),
         Orientationd(keys=["image", "localiser", "label"], axcodes="RAS"),
         ResampleToMatchd(["localiser", "label"], "image", mode=("bilinear", "nearest"), padding_mode="zeros"),
-        ScaleIntensityRanged("image", a_min=0, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
+        ScaleIntensityRanged("image", a_min=-1000, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
         ScaleIntensityRanged("localiser", a_min=-20, a_max=0, b_min=0.0, b_max=1.0, clip=True),
         SpatialPadd(keys=["image", "localiser", "label"], spatial_size=ROI_SIZE),
-        # SaveImaged(keys=["image"], output_postfix="init_image"),  # Comment out unless testing.
-        # SaveImaged(keys=["localiser"], output_postfix="init_local"),  # Comment out unless testing.
-        # SaveImaged(keys=["label"], output_postfix="init_label"),  # Comment out unless testing.
     ]
 
     train_only_transforms = [
-        RandAffined(keys=["image", "localiser", "label"], mode=("bilinear", "nearest", "nearest"), prob=0.95, 
+        RandAffined(keys=["image", "localiser", "label"], mode=("bilinear", "nearest", "nearest"), prob=0.8, 
                     rotate_range=(np.pi/15, np.pi/15, np.pi/60), scale_range=(0.2, 0.2, 0.2), padding_mode="border",
                     translate_range=(20, 20, 20)),
-        RandAffined(keys=["localiser"], mode=("nearest"), prob=0.5, 
-            scale_range=(0.1, 0.1, 0.1), padding_mode="zeros", translate_range=(10, 10, 30)),
+        RandAffined(keys=["localiser"], mode=("nearest"), prob=0.8,  scale_range=(0.1, 0.1, 0.1), padding_mode="zeros", translate_range=(10, 10, 30)),
         RandCropByPosNegLabeld(keys=["image", "label", "localiser"], label_key="label", spatial_size=ROI_SIZE,
                         pos=1, neg=1, num_samples=4, allow_smaller=False),           
-        RandFlipd(keys=["image", "localiser", "label"], prob=0.5, spatial_axis=2),
-        RandShiftIntensityd(keys=["image"], offsets=0.10, prob=0.90),
-        RandGaussianNoised(keys=["image"], prob=0.5),
-        RandGaussianSmoothd(keys=["image"], prob=0.5),
-        RandGaussianSharpend(keys=["image"], prob=0.5),
+        RandFlipd(keys=["image", "localiser", "label"], prob=0.5, spatial_axis=[0, 1, 2]),
+        RandShiftIntensityd(keys=["image"], offsets=0.10, prob=0.8),
+        RandGaussianNoised(keys=["image"], prob=0.2),
+        RandGaussianSmoothd(keys=["image"], prob=0.2),
+        RandGaussianSharpend(keys=["image"], prob=0.2),
         ConcatItemsd(keys=["image", "localiser"], name="inputs"),
         DeleteItemsd(keys=["image", "localiser"]),
         EnsureTyped(keys="inputs", dtype=np.float32)
@@ -376,7 +372,7 @@ def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output_last_minute_
     model_name = "per_tooth_unet_64_64_64"
 
     train_model(ld_train, ld_val, path_output_dir, model, model_name, train_transforms, test_val_transforms, n_labels,
-                deterministic_training_seed=deterministic_seed, n_workers=4, batch_size=20)
+                deterministic_training_seed=deterministic_seed, n_workers=4, batch_size=10)
     
     test_model(ld_test, path_output_dir / f"{model_name}_epoch_20.pkl", model, 
                test_val_transforms, postprocessing_transforms, n_labels, n_workers=1, batch_size=1)

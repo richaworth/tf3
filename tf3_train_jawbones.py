@@ -115,8 +115,8 @@ def train_model(ld_train: list[dict],
         path_opt_ckpt_previous = path_checkpoint_model.parent / f"{path_checkpoint_model.stem}_opt{path_checkpoint_model.suffix}"
         model.load_state_dict(torch.load(path_checkpoint_model, weights_only=True))
 
-        # torch.load(path_opt_ckpt_previous, optimizer.state_dict())
-        # optimizer.param_groups[0]["initial_lr"] = 1e-4
+        torch.load(path_opt_ckpt_previous, optimizer.state_dict())
+        optimizer.param_groups[0]["initial_lr"] = 1e-4
         min_epochs = checkpoint_epoch
     else:
         path_model_ckpt_previous = None
@@ -124,7 +124,7 @@ def train_model(ld_train: list[dict],
         min_epochs = 0
         
     lr_epoch = min_epochs - 1
-    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, last_epoch=lr_epoch)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, last_epoch=lr_epoch)
 
     scaler = torch.GradScaler("cuda") if AMP else None
 
@@ -342,7 +342,6 @@ def main(path_output_dir: Path = Path("C:/data/tf3_jawbones_only/")):
         Orientationd(keys=["image", "label"], axcodes="RAS"),
         LabelFilterd("label", filter_labels), 
         EditLabelsd("label", rename_labels),
-        # ScaleIntensityRanged("image", a_min=0, a_max=4000, b_min=0.0, b_max=1.0, clip=True),
         ScaleIntensityRanged("image", a_min=-1000, a_max=2000, b_min=0.0, b_max=1.0, clip=True),
         Spacingd(keys=["image", "label"], pixdim=(0.5, 0.5, 0.5), mode="nearest"),
         SpatialPadd(["image", "label"], ROI_SIZE),
