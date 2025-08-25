@@ -94,10 +94,6 @@ def train_model(ld_train: list[dict],
         path_model_ckpt_previous = None
         path_opt_ckpt_previous = None
 
-    # Load previous weights
-    path_weights = Path("tf3_evaluation/algorithm/per_tooth_unet_80_80_80.pkl")
-    torch.load(path_weights, model.state_dict(), weights_only=True)
-
     lr_epoch = -1 if checkpoint_epoch is None else checkpoint_epoch -1
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=1e-7, last_epoch=lr_epoch)
 
