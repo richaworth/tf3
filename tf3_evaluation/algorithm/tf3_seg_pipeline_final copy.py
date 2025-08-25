@@ -681,10 +681,10 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
             # label_array_out = label_tensor_out.squeeze().cpu().numpy()
             # review_pngs(label_array_out, [0, 1, 2], path_interim_data / "png", f"{case_id}_canals_out")
         
-    # For each tooth found - find centres, crop the tooth. (TOOTH_LOOKUP is in the form label_value: label_name).
+    # For each tooth found - find centres. (TOOTH_LOOKUP is in the form label_value: label_name).
     # * Currently, just take highest confidence if there's more than one box for that label.
     # * Tooth patch model ROI == 80 x 80 x 80 voxels
-    # * For each tooth centre, create a signed distance map from a small sphere at this point to the rest of the patch.
+    # For each tooth centre, create a signed distance map from a small sphere at this point to the rest of the patch.
 
     print("Start individual tooth searches")
 
@@ -740,18 +740,21 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
             ]
         
         tooth_centre = [int((bb[0] + bb[3]) / 2), int((bb[1] + bb[4]) / 2), int((bb[2] + bb[5]) / 2)]
-       
-        x0 = bb[0]
-        y0 = bb[1]
-        z0 = bb[2]
 
-        x1 = bb[0]
-        y1 = bb[1]
-        z1 = bb[2]
+        # Ensure that patches don't have negative or over-sized bounds.
+        x0 = max(tooth_centre[0] - 40, 0)
+        y0 = max(tooth_centre[1] - 40, 0)
+        x1 = min(tooth_centre[0] + 40, im_array_in.shape[0])
+        y1 = min(tooth_centre[1] + 40, im_array_in.shape[1])
+        # z0 = max(tooth_centre[2] - 40, 0)
+        # z1 = min(tooth_centre[2] + 40, im_array_in.shape[2])
 
+        # Could try sliding window (keep largest) across the volume defined by z0, z1, yolo result. TODO: test
+        z0 = z0_in
+        z1 = z1_in
         z_length = z1 - z0 if z1 - z0 > 80 else 80
 
-        # Pad tooth patch to min ROI (64 x 64 x 64) if necessary.
+        # Pad tooth patch if at the edge.
         pad_x0 = 0 if x0 > 0 else -1 * (tooth_centre[0] - 40)
         pad_y0 = 0 if y0 > 0 else -1 * (tooth_centre[1] - 40)
         pad_z0 = 0 if z0 > 0 else -1 * (tooth_centre[2] - int(z_length / 2))
@@ -917,12 +920,13 @@ def main():
         "yolo_axis_ap": Path("tf3_evaluation/algorithm/yolo_localiser_640_axis_1.pt"),
         "yolo_lower_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_lower_jaw.pt"),
         "yolo_upper_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_upper_jaw.pt"),
+        # "seg_tooth": Path("tf3_evaluation/algorithm/per_tooth_unet_best_metric_epoch_50.pkl"),
         "seg_tooth": Path("tf3_evaluation/algorithm/per_tooth_unet_80_80_80.pkl"),
         "seg_large_anatomy": Path("tf3_evaluation/algorithm/non_tooth_anatomy_80_80_80.pkl"),
         "seg_canals": Path("tf3_evaluation/algorithm/canals_from_jawbone_64_64_64.pkl"),
     }
 
-    for path_image in list_images:
+    for path_image in list_images[1:2]:
         if not (path_output_data / f"{path_image.name.split(".")[0]}_all_labels.nii.gz").exists():
             segment_one_image(path_image, path_output_data, model_paths, run_in_debug_mode=True)
 

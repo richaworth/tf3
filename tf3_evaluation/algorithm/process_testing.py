@@ -20,16 +20,17 @@ def get_default_device():
 class ToothFairy3_OralPharyngealSegmentation(SegmentationAlgorithm):
     def __init__(self):
         super().__init__(
-            input_path=Path('/input/images/cbct/'),
-            output_path=Path('/output/images/oral-pharyngeal-segmentation/'),
-            )
+            input_path=Path('C:/data/tf3_eval_test'),
+            output_path=Path('C:/data/tf3_eval_test_out'),
+        )
         
         # Create output directory if it doesn't exist
         if not self._output_path.exists():
             self._output_path.mkdir(parents=True)
         
         # Create metadata output directory
-        self.metadata_output_path = Path('/output/metadata/')
+        self.metadata_output_path = Path("C:/data/tf3_eval_test_out/metadata")
+        # self.metadata_output_path = Path('/output/metadata/')
         if not self.metadata_output_path.exists():
             self.metadata_output_path.mkdir(parents=True)
         
@@ -76,27 +77,27 @@ class ToothFairy3_OralPharyngealSegmentation(SegmentationAlgorithm):
     @torch.no_grad()
     def predict(self, *, path_input_image: Path, sitk_image_loaded: sitk.Image) -> sitk.Image:
         models = {
-            "yolo_axis_lr": Path("/opt/app/models/yolo_models/yolo_localiser_640_axis_0.pt"),
-            "yolo_axis_ap": Path("/opt/app/models/yolo_models/yolo_localiser_640_axis_1.pt"),
-            "yolo_lower_teeth": Path("/opt/app/models/yolo_models/yolo_tooth_finder_lower_jaw.pt"),
-            "yolo_upper_teeth": Path("/opt/app/models/yolo_models/yolo_tooth_finder_upper_jaw.pt"),
-            "seg_tooth": Path("/opt/app/models/seg_models/per_tooth_unet_80_80_80.pkl"),
-            "seg_large_anatomy": Path("/opt/app/models/seg_models/non_tooth_anatomy_80_80_80.pkl"),
-            "seg_canals": Path("/opt/app/models/seg_models/canals_from_jawbone_64_64_64.pkl"),
+            "yolo_axis_lr": Path("tf3_evaluation/algorithm/yolo_localiser_640_axis_0.pt"),
+            "yolo_axis_ap": Path("tf3_evaluation/algorithm/yolo_localiser_640_axis_1.pt"),
+            "yolo_lower_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_lower_jaw.pt"),
+            "yolo_upper_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_upper_jaw.pt"),
+            "seg_tooth": Path("tf3_evaluation/algorithm/per_tooth_unet_80_80_80.pkl"),
+            "seg_large_anatomy": Path("tf3_evaluation/algorithm/non_tooth_anatomy_80_80_80.pkl"),
+            "seg_canals": Path("tf3_evaluation/algorithm/canals_from_jawbone_64_64_64.pkl"),
         }
         
-        output_array = segment_one_image(path_input_image, Path("/output/tmp"), models)
+        # If output_array shape != sitk_image_loaded shape, transpose to match.
+        output_array = segment_one_image(path_input_image, Path('C:/data/tf3_eval_test_out'), models)
         output_array = output_array.detach().cpu().squeeze()
-        
+
         output_array = np.flip(output_array, [0, 1])        # Fix sitk rotation of 180* around Z
         output_array = np.transpose(output_array, (2,1,0))  # Switch from numpy (k, j, i) to sitk (i, j, k) ordering.
-
+        
         output_image = sitk.GetImageFromArray(output_array)
         output_image.CopyInformation(sitk_image_loaded)
 
         return output_image
         
-
 
 if __name__ == "__main__":
     ToothFairy3_OralPharyngealSegmentation().process()

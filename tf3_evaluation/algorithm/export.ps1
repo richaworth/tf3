@@ -2,7 +2,7 @@
 
 $ErrorActionPreference = "Stop"
 $DOCKER_TAG = "toothfairy3-multiinstance-algorithm"
-$OUTPUT_FILE = "$DOCKER_TAG.tar.gz"
+$OUTPUT_FILE = "C:\code\python\tf3\tf3_evaluation\algorithm\toothfairy3-multiinstance-algorithm.tar.gz"
 
 # Find Docker executable
 $DOCKER_EXE = "docker"
@@ -20,7 +20,7 @@ if (-Not (Get-Command docker -ErrorAction SilentlyContinue)) {
 Write-Host "Exporting Docker image: $DOCKER_TAG"
 
 # Save the Docker image to a tar file
-$TEMP_TAR = "$DOCKER_TAG.tar"
+$TEMP_TAR = "C:\code\python\tf3\tf3_evaluation\algorithm\toothfairy3-multiinstance-algorithm.tar"
 & $DOCKER_EXE save $DOCKER_TAG -o $TEMP_TAR
 
 if ($LASTEXITCODE -ne 0) {

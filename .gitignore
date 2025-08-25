@@ -4,14 +4,18 @@ __pycache__/*
 */__pycache__/*
 desktop.ini
 
+tf3_evaluation/algorithm/__pycache__
+tf3_evaluation/algorithm/venv
+
 
 # Exclude YOLO stuff
 runs/*
 yolo11l.pt
 yolo11n.pt
 
-*pt
+*.pt
 *.pkl
 *.nii.gz
+*.tar.gz
 
 tf3_evaluation/algorithm/test

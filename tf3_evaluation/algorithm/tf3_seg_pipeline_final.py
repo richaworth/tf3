@@ -6,6 +6,7 @@ import torch
 from ultralytics import YOLO
 from pathlib import Path
 from skimage.transform import resize
+from skimage.measure import label
 from scipy.ndimage import binary_dilation
 import SimpleITK as sitk
 
@@ -401,14 +402,14 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
 
     # Process LR axis MIP
     image_mip_axis_lr_out = resize(image_mips[0], (640, 640)) 
-    image_mip_axis_lr_out = image_mip_axis_lr_out * (255 / 4000) # TODO: Remove this and output png once happy
+    image_mip_axis_lr_out = image_mip_axis_lr_out * (255 / 4000)
     imageio.imwrite(path_image_mip_axis_lr, image_mip_axis_lr_out.astype('uint8'))
     
     lr_model_result = yolo_bounds_from_image(path_image_mip_axis_lr, YOLO(model_path_dict["yolo_axis_lr"]), path_image_mip_axis_lr.parent)
 
     # Process AP axis MIP
     image_mip_axis_ap_out = resize(image_mips[1], (640, 640))
-    image_mip_axis_ap_out = image_mip_axis_ap_out * (255 / 4000) # TODO: Remove this and output png once happy
+    image_mip_axis_ap_out = image_mip_axis_ap_out * (255 / 4000)
     imageio.imwrite(path_image_mip_axis_ap, image_mip_axis_ap_out.astype('uint8'))
 
     ap_model_result = yolo_bounds_from_image(path_image_mip_axis_ap, YOLO(model_path_dict["yolo_axis_ap"]), path_image_mip_axis_ap.parent)
@@ -553,15 +554,22 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
     )
 
     large_anatomy_model.to(DEVICE)
-    large_anatomy_model.load_state_dict(torch.load(model_path_dict["seg_large_anatomy"], weights_only=True))
+
+    if DEVICE == torch.device("cpu"):
+        large_anatomy_model.load_state_dict(torch.load(model_path_dict["seg_large_anatomy"], weights_only=True, map_location=torch.device('cpu')))
+    else:
+        large_anatomy_model.load_state_dict(torch.load(model_path_dict["seg_large_anatomy"], weights_only=True))
     large_anatomy_model.eval()
 
     with torch.no_grad():
         for data in la_loader:
             la_inputs = data["image"].to(DEVICE)
             
-            with torch.autocast("cuda"):
+            if DEVICE == torch.device("cpu"):
                 la_out = sliding_window_inference(la_inputs, (80, 80, 80), 24, large_anatomy_model, 0.5)
+            else:
+                with torch.autocast("cuda"):
+                    la_out = sliding_window_inference(la_inputs, (80, 80, 80), 24, large_anatomy_model, 0.5)
 
             for la_inference_out in decollate_batch(la_out):
                 la_inference_out = AsDiscrete(argmax=True)(la_inference_out)
@@ -622,6 +630,10 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         )
 
         canals_model.to(DEVICE)
+
+    if DEVICE == torch.device("cpu"):
+        canals_model.load_state_dict(torch.load(model_path_dict["seg_canals"], weights_only=True, map_location=torch.device('cpu')))
+    else:
         canals_model.load_state_dict(torch.load(model_path_dict["seg_canals"]))
         canals_model.eval()
 
@@ -630,12 +642,15 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
                 image = data["image"].to(DEVICE)
                 canals_inputs = torch.cat([image, jawbone_tensor.unsqueeze(0)], dim=1)
 
-                with torch.autocast("cuda"):
+                if DEVICE == torch.device("cpu"):
                     canals_out = sliding_window_inference(canals_inputs, (64, 64, 64), 24, canals_model, 0.5)
+                else:
+                    with torch.autocast("cuda"):
+                        canals_out = sliding_window_inference(canals_inputs, (64, 64, 64), 24, canals_model, 0.5)
 
                 for canals_inference_out in decollate_batch(canals_out):
-                    canals_inference_out = AsDiscrete(argmax=True)(canals_inference_out)   
-
+                    canals_inference_out = AsDiscrete(argmax=True)(canals_inference_out)
+                    
                     if run_in_debug_mode:
                         si = SaveImage(output_dir=path_interim_data / "test_segmentations", output_postfix="canals_from_torch", separate_folder=False)
                         si(canals_inference_out)
@@ -647,6 +662,17 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         label_tensor_out = torch.where(canals_inference_out == 3, 51, label_tensor_out)
         label_tensor_out = torch.where(canals_inference_out == 4, 52, label_tensor_out)
         label_tensor_out = torch.where(canals_inference_out == 5, 53, label_tensor_out)
+
+        # As the jawbone mask does a good job at leaving gaps for the canals, dilate these to fill.
+        jawbone_mask = torch.where(label_tensor_out == 1, 1, 0)
+
+        for canal_value in [3, 4, 103, 104, 105]:
+            canal_mask = torch.where(label_tensor_out == canal_value, 1, 0)
+            canal_mask = torch_dilate_conv3d(canal_mask, iterations=3)
+            label_tensor_out = torch.where(canal_mask == 1, canal_value, label_tensor_out)
+        
+        # Overwrite with lower jawbone mask to cover over-expansion.
+        label_tensor_out = torch.where(jawbone_mask == 1, 1, label_tensor_out)
 
         if run_in_debug_mode:
             si = SaveImage(output_dir=path_interim_data, output_postfix="canals", separate_folder=False)
@@ -672,19 +698,24 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
     )
 
     tooth_model.to(DEVICE)
-    tooth_model.load_state_dict(torch.load(model_path_dict["seg_tooth"], weights_only=True))
+    
+    if DEVICE == torch.device("cpu"):
+        tooth_model.load_state_dict(torch.load(model_path_dict["seg_tooth"], weights_only=True, map_location=torch.device('cpu')))
+    else:
+        tooth_model.load_state_dict(torch.load(model_path_dict["seg_tooth"]))
+    
     tooth_model.eval()
 
     def _run_teeth_finder(tooth_name, row):
         if row == "lower":
             yolo_result = yolo_lower_teeth
-            z0_in = z0_lower + context_slices if z0_lower is not None else None
-            z1_in = z1_lower + overlap_slices if z1_lower is not None else None
+            z0_in = z0_lower if z0_lower is not None else None
+            z1_in = z1_lower if z1_lower is not None else None
             lookup = LOWER_TEETH_LOOKUP
         else:
             yolo_result = yolo_upper_teeth
-            z0_in = z0_upper - overlap_slices if z0_upper is not None else None
-            z1_in = z1_upper - context_slices if z1_upper is not None else None
+            z0_in = z0_upper if z0_upper is not None else None
+            z1_in = z1_upper if z1_upper is not None else None
             lookup = UPPER_TEETH_LOOKUP
 
         label_value = lookup[tooth_name]
@@ -715,69 +746,21 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         y0 = max(tooth_centre[1] - 40, 0)
         x1 = min(tooth_centre[0] + 40, im_array_in.shape[0])
         y1 = min(tooth_centre[1] + 40, im_array_in.shape[1])
-        z0 = max(tooth_centre[2] - 40, 0)
-        z1 = min(tooth_centre[2] + 40, im_array_in.shape[2])
+        # z0 = max(tooth_centre[2] - 40, 0)
+        # z1 = min(tooth_centre[2] + 40, im_array_in.shape[2])
 
-        # # Teeth should only contain dentin and fillings at the top. As such, if the ROI doesn't have +2000HU near the top, it could be improved.
-        # # Only working on the central section of the bounds for both simplicity and specificity.
-        # # If none found, default to previous z0-z1.
-
-        # # Note - image in current frame is upside down as far as Z goes - lower Z slices are closer to the roof of the mouth.
-        # # As such, z1_upper is the "bottom" of the upper bounds. 
-
-        # if z1_in - z0_in > 100 and row == "lower":
-        #     test_array = im_array_in[x0 + int((x1-x0)*0.25):x1 - int((x1-x0)*0.25), y0 + int((y1-y0)*0.25):y1 - int((y1-y0)*0.25), z0_in:z1_in]
-        #     test_array = np.where(test_array > 2000, 1, 0)
-        #     step = 10
-            
-        #     best_bright_end = 0
-        #     best_z0 = int((z1_in - z0_in) / 2)
-
-        #     for window_z0 in range(0, test_array.shape[2] - 80, step):
-        #         # If the centre of this window is inside the upper bounds, skip this window.
-        #         if z0_upper is not None:
-        #             if z0 + window_z0 + 40 < z1_upper:
-        #                 continue
-
-        #         n_bright_end = np.sum(test_array[:, :, window_z0 + 40:window_z0 + 80])
-
-        #         if n_bright_end > best_bright_end:
-        #             best_bright_end = n_bright_end
-        #             best_z0 = window_z0
-
-        #     z0 = z0_in + best_z0
-        #     z1 = z0_in + best_z0 + 80
-        
-        # # Inverse (bright at bottom) for upper teeth.
-        # if z1_in - z0_in > 100 and row == "upper":
-        #     test_array = im_array_in[x0 + int((x1-x0)*0.25):x1 - int((x1-x0)*0.25), y0 + int((y1-y0)*0.25):y1 - int((y1-y0)*0.25), z0_in:z1_in]
-        #     test_array = np.where(test_array > 2000, 1, 0)
-        #     step = 20
-            
-        #     best_bright_end = 0
-        #     best_z0 = int((z1_in - z0_in) / 2)
-
-        #     for window_z0 in range(0, test_array.shape[2] - 80, step):
-        #         # If the centre of this window is inside the upper bounds, skip this window.
-        #         if z0_lower is not None:
-        #             if z0 + window_z0 + 40 > z0_lower:
-        #                 continue
-
-        #         n_bright_end = np.sum(test_array[window_z0, window_z0 + 40])
-        #         if n_bright_end > best_bright_end:
-        #             best_bright_end = n_bright_end
-        #             best_z0 = window_z0
-
-        #     z0 = z0_in + best_z0
-        #     z1 = z0_in + best_z0 + 80
+        # Could try sliding window (keep largest) across the volume defined by z0, z1, yolo result. TODO: test
+        z0 = z0_in
+        z1 = z1_in
+        z_length = z1 - z0 if z1 - z0 > 80 else 80
 
         # Pad tooth patch if at the edge.
         pad_x0 = 0 if x0 > 0 else -1 * (tooth_centre[0] - 40)
         pad_y0 = 0 if y0 > 0 else -1 * (tooth_centre[1] - 40)
-        pad_z0 = 0 if z0 > 0 else -1 * (tooth_centre[2] - 40)
+        pad_z0 = 0 if z0 > 0 else -1 * (tooth_centre[2] - int(z_length / 2))
         pad_x1 = 0 if x1 < im_array_in.shape[0] else (tooth_centre[0] + 40) - im_array_in.shape[0] -1 
         pad_y1 = 0 if y1 < im_array_in.shape[1] else (tooth_centre[1] + 40) - im_array_in.shape[1] -1
-        pad_z1 = 0 if z1 < im_array_in.shape[2] else (tooth_centre[2] + 40) - im_array_in.shape[2] -1
+        pad_z1 = 0 if z1 < im_array_in.shape[2] else (tooth_centre[2] + int(z_length / 2)) - im_array_in.shape[2] -1
 
         tooth_image = im_array_in[x0:x1, y0:y1, z0:z1]
         padding = ((pad_x0, pad_x1), (pad_y0, pad_y1), (pad_z0, pad_z1))
@@ -788,7 +771,7 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
             tooth_image_pad = tooth_image
 
         tooth_sd = np.zeros_like(tooth_image_pad)
-        tooth_sd[40, 40, 40] = 1
+        tooth_sd[int(tooth_image_pad.shape[0] / 2), int(tooth_image_pad.shape[1] / 2), int(tooth_image_pad.shape[2] / 2)] = 1
         tooth_sd = binary_dilation(tooth_sd, iterations=2).astype(np.uint8)
 
         itk_tooth_sd = sitk.GetImageFromArray(tooth_sd)
@@ -797,7 +780,7 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         # Clip image to 0-3000; SD to -50-0. Set these to 0-1.
         tooth_image_pad = ((np.clip(tooth_image_pad, a_min=0, a_max=3000)) / 3000)
         # tooth_sd = ((np.clip(sitk.GetArrayViewFromImage(itk_smdm_out), a_min=-50, a_max=0)) / 20 ) + 1
-        tooth_sd = ((np.clip(sitk.GetArrayViewFromImage(itk_smdm_out), a_min=-20, a_max=0)) / 20 ) + 1
+        tooth_sd = ((np.clip(sitk.GetArrayViewFromImage(itk_smdm_out), a_min=-50, a_max=0)) / 50 ) + 1
 
         # Concatenate Image and SD along axis 0
         tensor_tooth_im = EnsureChannelFirst()(tooth_image_pad, meta_dict=im.meta)
@@ -814,7 +797,7 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
 
         with torch.no_grad():
             tensor_inputs = tensor_inputs.unsqueeze(0)
-            tensor_output = tooth_model(tensor_inputs)
+            tensor_output = sliding_window_inference(tensor_inputs, (80, 80, 80), 24, tooth_model, 0.75)
 
         # Move result to CPU, set values of mask to lookup values
         tooth_model_result_argmax = AsDiscrete(argmax=True)(tensor_output.squeeze())
@@ -822,8 +805,8 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
 
         # Un-pad results as necessary:
         if not all([x == 0 and y == 0 for x, y in padding]):
-            tooth_model_result_argmax = tooth_model_result_argmax[:, pad_x0:80-pad_x1, pad_y0:80-pad_y1, pad_z0:80-pad_z1]
-            tooth_model_conf = tooth_model_conf[pad_x0:80-pad_x1, pad_y0:80-pad_y1, pad_z0:80-pad_z1]
+            tooth_model_result_argmax = tooth_model_result_argmax[:, pad_x0:80-pad_x1, pad_y0:80-pad_y1, pad_z0:tooth_image_pad.shape[2]-pad_z1]
+            tooth_model_conf = tooth_model_conf[pad_x0:80-pad_x1, pad_y0:80-pad_y1, pad_z0:tooth_image_pad.shape[2]-pad_z1]
 
         # Back-fill output arrays to full image size
         # Tooth voxel confidence image
@@ -841,8 +824,19 @@ def segment_one_image(path_image_in: Path, path_interim_data: Path, model_path_d
         tooth_model_result_argmax_out = torch.zeros_like(im, device=DEVICE)
         tooth_model_result_argmax_out[x0:x1, y0:y1, z0:z1] = tooth_model_result_argmax
 
+        tooth_mask = torch.where(tooth_model_result_argmax == 1, 1, 0)
+        tooth_mask_cc = label(tooth_mask.to("cpu").squeeze())
+        
+        if np.max(tooth_mask_cc) > 0:
+            tooth_mask_largest_cc = tooth_mask_cc == np.argmax(np.bincount(tooth_mask_cc.flat)[1:])+1
+            tooth_label_out = torch.from_numpy(tooth_mask_largest_cc).unsqueeze(0).to(DEVICE)
+        else:
+            tooth_label_out = tooth_mask
+
         tooth_label_out = torch.where(tooth_model_result_argmax_out == 1, label_value, 0)
         pulp_label_out = torch.where(tooth_model_result_argmax_out == 2, PULP_LABEL, 0)
+
+        
 
         # if DEBUG:
             # review_pngs(tooth_model_result_argmax_out, [0, 1, 2], path_interim_data / "png", f"{case_id}_{tooth_name}_{row}_argmax")

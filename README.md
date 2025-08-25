@@ -1,15 +1,27 @@
-For people running the scripts for me (I'm assuming Windows and no previous python installs - if you're on Linux, you can probably solve any minor discrepancies).
+# tf3
+MICCAI GC 2025 - Toothfairy 3
 
-Initial steps:
-1. Install Python 3.12 
-2. Install CUDA Toolkit
-3. Install cuDNN
-4. Copy contents of Google Drive to C:\ (i.e. C:\code\python\tf3, C:\data\tf3)
+Deadline for submission - 24th August 2025
 
-Command Line:
-5. run "cd C:\code\python\tf3"
-6. run "pip install -r requirements.txt" - there may be an error about MONAI and Torch - you can ignore this.
-7. Follow the instructions here (https://pytorch.org/get-started/locally/) to install the correct version of Pytorch for your machine (in case it doesn't match mine). 
-8. run "python tf3_train_X.py" (Where X is replaced with the model name).
+! Pipeline
+Approach is based loosely on "Coarse to Fine Vertebrae Localization and Segmentation with SpatialConfiguration-Net and U-Net" 
+(Payer et al 2020) (https://cpb-ap-se2.wpmucdn.com/blogs.auckland.ac.nz/dist/1/670/files/2020/06/2020PayerVISAPP.pdf)
 
-Once the script completes, there should be a small number of .pkl files in C:\data\tf3_X_output (where X is replaced with the model name). Send these to me via whatever method (Megaupload, Google Drive etc.).
+1. Image -> Localisation model (bones+teeth) - get region of interest bounds.
+    - YOLO Object detection in 2D, using maximum intensity projection along X and Y axes.
+
+2. Image and X/Y bounds -> Tooth bounding boxes - get region of interest bounds.
+    - YOLO Object detection in 2D, using maximum intensity projection over the bounds from 1, along Z axis.
+
+3. Image -> Maxilla/Mandible and Non-bony structures (sinuses, pharynx) segmentation 
+    - UNETR of 3D images. Resolution slightly lowered due to memory issues.
+
+4. Image + jawbone seg -> nerve canals
+    - UNETR of 3D images + mandible mask. Resolution slightly lowered due to memory issues.
+
+5. Image + teeth bounds (+ signed distance image to centre of tooth) -> individual teeth.
+    - Unet of tooth images + signed distance to centre of tooth.
+
+6. Combine results and output.
+
+
