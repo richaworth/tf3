@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 import yaml
 
-from monai.losses.dice import DiceCELoss
+from monai.losses.dice import DiceCELoss, DiceLoss
 
 from monai.data.utils import decollate_batch 
 from monai.data.dataset import PersistentDataset, Dataset
@@ -68,18 +68,18 @@ def train_model(ld_train: list[dict],
     val_ds = PersistentDataset(data=ld_val, transform=val_transforms, cache_dir=path_output_dir / f"cache_val_{model_name}")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=n_workers)
-    val_loader = DataLoader(val_ds, batch_size=int(batch_size/2), shuffle=False, num_workers=n_workers)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=n_workers)
 
     device = torch.device(DEVICE)
     model.to(device)
 
-    max_epochs = 20
-    val_interval = 2
-    checkpoint_interval = 10 # Save a checkpoint of the training in case restarting is required (temporary).
-    major_checkpoint_interval = 10 # Save a permanent copy of the current training at major intervals.
+    max_epochs = 100
+    val_interval = 5
+    checkpoint_interval = 5 # Save a checkpoint of the training in case restarting is required (temporary).
+    major_checkpoint_interval = 20 # Save a permanent copy of the current training at major intervals.
     no_improvement_threshold = 5 # If no improvement in the metric within N validation cycles, stop training.
     
-    loss_function = DiceCELoss(to_onehot_y=True, softmax=True, include_background=False)
+    loss_function = DiceLoss(to_onehot_y=True, softmax=True, include_background=False, weight=[1, 1, 0.2])
     torch.backends.cudnn.benchmark = True
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
@@ -95,7 +95,7 @@ def train_model(ld_train: list[dict],
         path_opt_ckpt_previous = None
 
     lr_epoch = -1 if checkpoint_epoch is None else checkpoint_epoch -1
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=1e-7, last_epoch=lr_epoch)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=1e-6, last_epoch=lr_epoch)
 
     scaler = torch.GradScaler("cuda") if AMP else None
 
@@ -185,7 +185,7 @@ def train_model(ld_train: list[dict],
 
                     val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
                     val_labels = [post_label_trans(i) for i in decollate_batch(val_labels)]
-                    dice_metric(y_pred=val_outputs, y=val_labels)
+                    dice_metric(y_pred=val_outputs[:, 0:3, :, :], y=val_labels[:, 0:3, :, :])
 
                 dsc = dice_metric.aggregate().item()
                 metric_values.append((dsc))
@@ -269,7 +269,7 @@ def test_model(ld_test: list[dict],
             print(dice_metric.aggregate())
 
 
-def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output_last_minute_panic/")):
+def main(path_output_dir: Path = Path("G:/My Drive/tf3_build/tf3_per_tooth_output_last_minute_panic/")):
     """
     Train jaw bone and canal anatomy model from preprocessed images (see tf3_preprocess_images.py)
 
@@ -368,10 +368,11 @@ def main(path_output_dir: Path = Path("C:/data/tf3_per_tooth_output_last_minute_
     model_name = "per_tooth_unet_64_64_64"
 
     train_model(ld_train, ld_val, path_output_dir, model, model_name, train_transforms, test_val_transforms, n_labels,
-                deterministic_training_seed=deterministic_seed, n_workers=4, batch_size=10)
+                deterministic_training_seed=deterministic_seed, n_workers=4, batch_size=20, checkpoint_epoch=80, 
+                path_checkpoint_model=path_output_dir / "checkpoint_per_tooth_unet_64_64_64_epoch_80.pkl")
     
     test_model(ld_test, path_output_dir / f"{model_name}_epoch_20.pkl", model, 
-               test_val_transforms, postprocessing_transforms, n_labels, n_workers=1, batch_size=1)
+               test_val_transforms, postprocessing_transforms, n_labels, n_workers=4, batch_size=1)
 
 
 if __name__ == "__main__":

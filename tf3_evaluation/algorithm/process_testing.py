@@ -62,18 +62,6 @@ class ToothFairy3_OralPharyngealSegmentation(SegmentationAlgorithm):
             "error_messages": [],
         }
 
-    def save_instance_metadata(self, metadata: Dict, image_name: str):
-        """
-        Save instance metadata to JSON file
-        
-        Args:
-            metadata: Instance metadata dictionary
-            image_name: Name of the input image (without extension)
-        """
-        metadata_file = self.metadata_output_path / f"{image_name}_instances.json"
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
-
     @torch.no_grad()
     def predict(self, *, path_input_image: Path, sitk_image_loaded: sitk.Image) -> sitk.Image:
         models = {
@@ -81,13 +69,12 @@ class ToothFairy3_OralPharyngealSegmentation(SegmentationAlgorithm):
             "yolo_axis_ap": Path("tf3_evaluation/algorithm/yolo_localiser_640_axis_1.pt"),
             "yolo_lower_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_lower_jaw.pt"),
             "yolo_upper_teeth": Path("tf3_evaluation/algorithm/yolo_tooth_finder_upper_jaw.pt"),
-            "seg_tooth": Path("tf3_evaluation/algorithm/per_tooth_unet_80_80_80.pkl"),
+            "seg_tooth": Path("tf3_evaluation/algorithm/per_tooth_unet_64_64_64_best_metric_epoch_70.pkl"),
             "seg_large_anatomy": Path("tf3_evaluation/algorithm/non_tooth_anatomy_80_80_80.pkl"),
             "seg_canals": Path("tf3_evaluation/algorithm/canals_from_jawbone_64_64_64.pkl"),
         }
         
-        # If output_array shape != sitk_image_loaded shape, transpose to match.
-        output_array = segment_one_image(path_input_image, Path('C:/data/tf3_eval_test_out'), models)
+        output_array = segment_one_image(path_input_image, Path('C:/data/tf3_eval_test_out'), models, run_in_debug_mode=True)
         output_array = output_array.detach().cpu().squeeze()
 
         output_array = np.flip(output_array, [0, 1])        # Fix sitk rotation of 180* around Z

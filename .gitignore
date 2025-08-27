@@ -17,5 +17,6 @@ yolo11n.pt
 *.pkl
 *.nii.gz
 *.tar.gz
+*.tar.gz.bak
 
 tf3_evaluation/algorithm/test

@@ -27,7 +27,7 @@ RUN python -m pip check torch
 RUN python -m pip check torchvision
 
 # COPY --chown=user:user per_tooth_unet_best_metric_epoch_50.pkl /opt/app/models/seg_models/
-COPY --chown=user:user per_tooth_unet_80_80_80.pkl /opt/app/models/seg_models/
+COPY --chown=user:user per_tooth_unet_64_64_64_best_metric_epoch_70.pkl /opt/app/models/seg_models/
 COPY --chown=user:user non_tooth_anatomy_80_80_80.pkl /opt/app/models/seg_models/
 COPY --chown=user:user canals_from_jawbone_64_64_64.pkl /opt/app/models/seg_models/
 COPY --chown=user:user yolo_localiser_640_axis_0.pt /opt/app/models/yolo_models/

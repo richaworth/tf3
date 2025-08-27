@@ -61,18 +61,6 @@ class ToothFairy3_OralPharyngealSegmentation(SegmentationAlgorithm):
             "error_messages": [],
         }
 
-    def save_instance_metadata(self, metadata: Dict, image_name: str):
-        """
-        Save instance metadata to JSON file
-        
-        Args:
-            metadata: Instance metadata dictionary
-            image_name: Name of the input image (without extension)
-        """
-        metadata_file = self.metadata_output_path / f"{image_name}_instances.json"
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
-
     @torch.no_grad()
     def predict(self, *, path_input_image: Path, sitk_image_loaded: sitk.Image) -> sitk.Image:
         models = {
@@ -80,11 +68,11 @@ class ToothFairy3_OralPharyngealSegmentation(SegmentationAlgorithm):
             "yolo_axis_ap": Path("/opt/app/models/yolo_models/yolo_localiser_640_axis_1.pt"),
             "yolo_lower_teeth": Path("/opt/app/models/yolo_models/yolo_tooth_finder_lower_jaw.pt"),
             "yolo_upper_teeth": Path("/opt/app/models/yolo_models/yolo_tooth_finder_upper_jaw.pt"),
-            "seg_tooth": Path("/opt/app/models/seg_models/per_tooth_unet_80_80_80.pkl"),
+            "seg_tooth": Path("/opt/app/models/seg_models/per_tooth_unet_64_64_64_best_metric_epoch_70.pkl"),
             "seg_large_anatomy": Path("/opt/app/models/seg_models/non_tooth_anatomy_80_80_80.pkl"),
             "seg_canals": Path("/opt/app/models/seg_models/canals_from_jawbone_64_64_64.pkl"),
         }
-        
+            
         output_array = segment_one_image(path_input_image, Path("/output/tmp"), models)
         output_array = output_array.detach().cpu().squeeze()
         
@@ -96,7 +84,6 @@ class ToothFairy3_OralPharyngealSegmentation(SegmentationAlgorithm):
 
         return output_image
         
-
 
 if __name__ == "__main__":
     ToothFairy3_OralPharyngealSegmentation().process()

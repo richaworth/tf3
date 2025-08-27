@@ -331,7 +331,8 @@ def main(path_original_images: Path = Path("C:/data/tf3/images_rolm"),
     path_images_rolm.mkdir(exist_ok=True, parents=True)
     path_labels_rolm.mkdir(exist_ok=True, parents=True)
 
-    case_ids = [x.name.split(".")[0] for x in list(path_original_labels.glob(f"*{metadata['file_ending']}"))]
+    # case_ids = [x.name.split(".")[0] for x in list(path_original_labels.glob(f"*{metadata['file_ending']}"))]
+    case_ids = ["ToothFairy3P_071_mirrored"]
 
     # Set up left/right label reversing
     label_lookup_rolm = {}
@@ -408,7 +409,7 @@ def main(path_original_images: Path = Path("C:/data/tf3/images_rolm"),
             
             # Construct tooth centre signed distance maps, cropped images, masks (does internal existence checking, so no need to put here).
             per_tooth_image_mask_sd(path_images_rolm / f"{case_id}{suffix}.nii.gz", path_labels_rolm / f"{case_id}{suffix}.nii.gz", 
-                                    path_per_tooth_image_dir, path_per_tooth_label_dir, path_tooth_centre_sd)
+                                    path_per_tooth_image_dir, path_per_tooth_label_dir, path_tooth_centre_sd, overwrite=True)
         
             # Tidy up interim files as necessary:
             # (path_images_rolm / f"{case_id}_m1.nii.gz").unlink(missing_ok=True)
@@ -416,7 +417,7 @@ def main(path_original_images: Path = Path("C:/data/tf3/images_rolm"),
             # (path_labels_loc / f"{case_id}{suffix}_res.nii.gz").unlink(missing_ok=True)
             # (path_images_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
             # (path_labels_loc / f"{case_id}{suffix}_lab.nii.gz").unlink(missing_ok=True)
-
+    
     Parallel(n_jobs=4)(delayed(_run_case)(c) for c in tqdm(case_ids))
 
 
